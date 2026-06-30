@@ -1,6 +1,6 @@
 # @diffdeck/cli
 
-The DiffDeck upload CLI — push Storybook builds and Playwright recordings to [DiffDeck](https://diffdeck.dev) from any CI.
+The DiffDeck upload CLI — push Storybook builds and Playwright recordings to [DiffDeck](https://diffdeck.ai) from any CI.
 
 It's a small, dependency-light Node/TypeScript CLI. It speaks only HTTP to the DiffDeck ingest API; there's no other runtime dependency (it uses Node's built-in `fetch`, `fs`, and `zlib`).
 
@@ -22,11 +22,11 @@ The binary is `diffdeck`.
 
 Every command needs a **project token**, sent as the `X-UI-Review-Token` header. Provide it with `--token` or the `DIFFDECK_TOKEN` environment variable.
 
-The DiffDeck host defaults to `https://app.diffdeck.dev` and can be overridden with `--host` or the `DIFFDECK_HOST` environment variable (useful for self-hosted/enterprise instances).
+The DiffDeck host defaults to `https://diffdeck.ai` and can be overridden with `--host` or the `DIFFDECK_HOST` environment variable (useful for self-hosted/enterprise instances).
 
 ```bash
 export DIFFDECK_TOKEN=ddp_xxxxxxxxxxxxxxxx
-export DIFFDECK_HOST=https://app.diffdeck.dev   # optional
+export DIFFDECK_HOST=https://diffdeck.ai   # optional
 ```
 
 ## Commands
@@ -49,7 +49,7 @@ diffdeck upload-storybook --dir storybook-static \
 | `--branch <name>` | Git branch name. Defaults to the repo's default branch server-side. |
 | `--message <text>` | Git commit message. Optional. |
 | `--token <token>` | Project token. Defaults to `$DIFFDECK_TOKEN`. |
-| `--host <url>` | DiffDeck host. Defaults to `$DIFFDECK_HOST` or `https://app.diffdeck.dev`. |
+| `--host <url>` | DiffDeck host. Defaults to `$DIFFDECK_HOST` or `https://diffdeck.ai`. |
 
 Build your Storybook first (`npx storybook build` produces `storybook-static/`).
 
@@ -81,7 +81,7 @@ diffdeck upload-recording --video test-results/home.webm \
 | `--branch <name>` | Git branch name. |
 | `--commit <sha>` | Git commit SHA. |
 | `--token <token>` | Project token. Defaults to `$DIFFDECK_TOKEN`. |
-| `--host <url>` | DiffDeck host. Defaults to `$DIFFDECK_HOST` or `https://app.diffdeck.dev`. |
+| `--host <url>` | DiffDeck host. Defaults to `$DIFFDECK_HOST` or `https://diffdeck.ai`. |
 
 > Recordings are a separately-priced add-on. If they're not enabled for your repository, the upload is rejected with `HTTP 402` and the CLI prints a clear message.
 

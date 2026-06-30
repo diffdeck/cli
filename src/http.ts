@@ -4,7 +4,7 @@
  * the DiffDeck ingest routes.
  */
 
-export const DEFAULT_HOST = "https://app.diffdeck.dev";
+export const DEFAULT_HOST = "https://diffdeck.ai";
 export const AUTH_HEADER = "X-UI-Review-Token";
 
 export interface UploadFile {
