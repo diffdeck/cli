@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * @diffdeck/cli entry point — the single DiffDeck upload engine.
+ * @diffdeckai/cli entry point — the single DiffDeck upload engine.
  *
  * Commands:
  *   upload-storybook   Pack a Storybook static build and upload it for visual review.

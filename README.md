@@ -1,4 +1,4 @@
-# @diffdeck/cli
+# @diffdeckai/cli
 
 The DiffDeck upload CLI — push Storybook builds and Playwright recordings to [DiffDeck](https://diffdeck.ai) from any CI.
 
@@ -10,10 +10,10 @@ Requires **Node 18+**.
 
 ```bash
 # one-off, no install
-npx @diffdeck/cli upload-storybook --help
+npx @diffdeckai/cli upload-storybook --help
 
 # or add to your project
-npm install --save-dev @diffdeck/cli
+npm install --save-dev @diffdeckai/cli
 ```
 
 The binary is `diffdeck`.
@@ -104,7 +104,7 @@ jobs:
           node-version: 20
       - run: npm ci
       - run: npx storybook build -o storybook-static
-      - run: npx @diffdeck/cli upload-storybook
+      - run: npx @diffdeckai/cli upload-storybook
               --dir storybook-static
               --commit "$GITHUB_SHA"
               --branch "${GITHUB_REF_NAME}"
@@ -121,7 +121,7 @@ diffdeck-storybook:
   script:
     - npm ci
     - npx storybook build -o storybook-static
-    - npx @diffdeck/cli upload-storybook
+    - npx @diffdeckai/cli upload-storybook
         --dir storybook-static
         --commit "$CI_COMMIT_SHA"
         --branch "$CI_COMMIT_REF_NAME"
@@ -143,7 +143,7 @@ jobs:
       - run: npm ci
       - run: npx storybook build -o storybook-static
       - run: >
-          npx @diffdeck/cli upload-storybook
+          npx @diffdeckai/cli upload-storybook
           --dir storybook-static
           --commit "$CIRCLE_SHA1"
           --branch "$CIRCLE_BRANCH"
@@ -158,7 +158,7 @@ workflows:
 
 ```bash
 # after Playwright runs and produced a video at test-results/home.webm
-npx @diffdeck/cli upload-recording \
+npx @diffdeckai/cli upload-recording \
   --video test-results/home.webm \
   --test "Home page renders" \
   --file "tests/home.spec.ts" \
