@@ -1,0 +1,46 @@
+# Conventional-Commits release automation for @diffdeckai/cli.
+#
+# On every push to main, release-please parses the Conventional Commits since the
+# last release and maintains a "release PR" that bumps the version + updates
+# CHANGELOG.md. When that PR is merged, release-please tags a GitHub Release and
+# this same run publishes the package to npm using OIDC **trusted publishing**
+# (no NPM_TOKEN — configure the trusted publisher once at
+# npmjs.com → @diffdeckai/cli → Settings → Trusted Publisher, pointing at this
+# repo + workflow).
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write # required for npm provenance + trusted publishing
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          release-type: node
+
+      # ── Publish only when a release was just created ──────────────────────
+      - uses: actions/checkout@v4
+        if: ${{ steps.release.outputs.release_created }}
+      - uses: actions/setup-node@v4
+        if: ${{ steps.release.outputs.release_created }}
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+      - name: Ensure npm supports trusted publishing
+        if: ${{ steps.release.outputs.release_created }}
+        run: npm install -g npm@latest # trusted publishing needs npm >= 11.5.1
+      - run: npm ci
+        if: ${{ steps.release.outputs.release_created }}
+      - run: npm run build
+        if: ${{ steps.release.outputs.release_created }}
+      - run: npm publish --provenance --access public
+        if: ${{ steps.release.outputs.release_created }}
