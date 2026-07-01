@@ -12,6 +12,7 @@
 import {parseArgs} from "./args";
 import {DEFAULT_HOST} from "./http";
 import {runUploadStorybook, STORYBOOK_HELP} from "./commands/uploadStorybook";
+import {runScreenshotStorybook, SCREENSHOT_HELP} from "./commands/screenshotStorybook";
 import {runUploadRecording, RECORDING_HELP} from "./commands/uploadRecording";
 
 const VERSION = "0.1.0";
@@ -22,8 +23,9 @@ Usage:
   diffdeck <command> [options]
 
 Commands:
-  upload-storybook   Pack a Storybook static build and upload it for visual review.
-  upload-recording   Upload a single Playwright test recording (video + metadata).
+  upload-storybook      Pack a Storybook static build and upload it for visual review.
+  screenshot-storybook  Render + render-check every story in CI and upload the screenshots.
+  upload-recording      Upload a single Playwright test recording (video + metadata).
 
 Global options:
   --help, -h         Show help (per-command help: diffdeck <command> --help).
@@ -50,6 +52,8 @@ async function main(): Promise<number> {
     switch (parsed.command) {
         case "upload-storybook":
             return runUploadStorybook(parsed);
+        case "screenshot-storybook":
+            return runScreenshotStorybook(parsed);
         case "upload-recording":
             return runUploadRecording(parsed);
         case undefined:
@@ -69,6 +73,7 @@ async function main(): Promise<number> {
 // Keep STORYBOOK_HELP / RECORDING_HELP referenced for tooling; they are the
 // per-command help bodies emitted by each command handler.
 void STORYBOOK_HELP;
+void SCREENSHOT_HELP;
 void RECORDING_HELP;
 
 main()

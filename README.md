@@ -53,6 +53,41 @@ diffdeck upload-storybook --dir storybook-static \
 
 Build your Storybook first (`npx storybook build` produces `storybook-static/`).
 
+> `upload-storybook` uploads the build only; screenshots are then rendered server-side.
+> Prefer **`screenshot-storybook`** below, which renders in CI (no server browser needed)
+> and fails the build if a story can't render.
+
+### `screenshot-storybook`
+
+Renders every story in a built Storybook to PNGs **in CI** (six variants each: light/dark ×
+phone/tablet/desktop), then uploads the screenshots together with the build
+(`POST <host>/api/products/ui-review/builds`). The server does no rendering — it hosts the
+build for browsing and diffs the screenshots against the baseline.
+
+A **render-check** runs alongside: if any story fails to render (a thrown error, a non-benign
+`console.error`, or Storybook's `#sb-errordisplay` overlay) the command prints a report, exits
+non-zero, and uploads nothing — so a broken story fails the CI build.
+
+```bash
+npm i -D playwright && npx playwright install chromium   # once, in your project
+diffdeck screenshot-storybook --dir storybook-static \
+  --commit "$GITHUB_SHA" \
+  --branch main \
+  --message "Fix button padding"
+```
+
+| Flag | Description |
+| --- | --- |
+| `--dir <path>` | Directory of the built Storybook (e.g. `storybook-static`). **Required.** |
+| `--commit <sha>` | Git commit SHA. **Required.** |
+| `--branch <name>` | Git branch name. Defaults to the repo's default branch server-side. |
+| `--message <text>` | Git commit message. Optional. |
+| `--token <token>` | Project token. Defaults to `$DIFFDECK_TOKEN`. |
+| `--host <url>` | DiffDeck host. Defaults to `$DIFFDECK_HOST` or `https://diffdeck.ai`. |
+
+**Playwright** (with browsers) must be installed in the project — it's resolved from your
+project, not bundled with the CLI, which keeps the CLI dependency-light.
+
 ### `upload-recording`
 
 Uploads a single Playwright test recording (video + test metadata) (`POST <host>/api/products/ui-review/recordings`). Your CI runs Playwright itself; this command just uploads the resulting video.
