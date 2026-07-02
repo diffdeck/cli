@@ -50,7 +50,7 @@ const STABILIZE_CSS =
 // console.error but the component still renders its empty/error state — that is
 // NOT a render failure. Only thrown errors / the error overlay count.
 const BENIGN_CONSOLE =
-    /Failed to fetch|API error|WebSocket|initial fetch failed|net::ERR|Not Found|is not valid JSON|status of 404|Failed to load resource/i;
+    /Failed to fetch|API error|WebSocket|initial fetch failed|net::ERR|Not Found|is not valid JSON|status of 404|Failed to load resource|favicon/i;
 
 export const SCREENSHOT_HELP = `diffdeck screenshot-storybook — render + upload Storybook screenshots for visual review
 
@@ -62,7 +62,10 @@ Options:
   --branch <name>       Git branch name. Defaults to the repo's default branch server-side.
   --commit <sha>        Git commit SHA. Required.
   --message <text>      Git commit message (optional).
-  --concurrency <n>     Parallel render workers (default: CPU count, capped 2–8). Alias: --jobs/-j.
+  --concurrency <n>     Parallel render workers (default: ~3× CPU count, capped 4–16). Alias: --jobs/-j.
+  --locale <tag>        Browser locale (default: en-US). Fixes Intl throwing in locale-less CI.
+  --timezone <tz>       Browser timezone (default: UTC). Alias: --tz.
+  --settle <ms>         Wait after render before screenshot (default: 500).
   --token <token>       Project token. Defaults to $DIFFDECK_TOKEN.
   --host <url>          DiffDeck host. Defaults to $DIFFDECK_HOST or ${DEFAULT_HOST}.
   --help                Show this help.
@@ -193,10 +196,19 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
     const branch = stringOption(parsed.options, ["branch", "b"]);
     const commitSha = stringOption(parsed.options, ["commit", "commit-sha", "commitSha", "c"]);
     const commitMessage = stringOption(parsed.options, ["message", "commit-message", "m"]);
+    // Rendering is largely idle-wait (navigation + settle), so we oversubscribe
+    // cores: concurrent pages far exceed the core count profitably.
     const cpuCount = os.cpus()?.length || 4;
-    const defaultConcurrency = Math.max(2, Math.min(cpuCount, 8));
+    const defaultConcurrency = Math.max(4, Math.min(cpuCount * 3, 16));
     const concurrencyRaw = Number(stringOption(parsed.options, ["concurrency", "jobs", "j"]));
     const concurrency = Number.isFinite(concurrencyRaw) && concurrencyRaw > 0 ? Math.floor(concurrencyRaw) : defaultConcurrency;
+    // Headless Chromium in a CI sandbox with no system locale (LC_CTYPE=POSIX)
+    // otherwise resolves Intl's default to the invalid tag "en-US@posix", making
+    // every Intl/toLocale* call throw — a pageerror on every story. Pin both.
+    const locale = stringOption(parsed.options, ["locale"]) || "en-US";
+    const timezone = stringOption(parsed.options, ["timezone", "tz"]) || "UTC";
+    const settleRaw = Number(stringOption(parsed.options, ["settle", "settle-ms"]));
+    const settleMs = Number.isFinite(settleRaw) && settleRaw >= 0 ? Math.floor(settleRaw) : 500;
 
     if (!dir) {
         console.error("Error: --dir <storybook-static> is required.");
@@ -249,7 +261,7 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
             await page.emulateMedia({colorScheme: theme});
             await page.setViewportSize(viewport);
             const url = `${site.origin}/iframe.html?id=${encodeURIComponent(story.id)}&viewMode=story`;
-            await page.goto(url, {waitUntil: "networkidle", timeout: NAV_TIMEOUT_MS});
+            await page.goto(url, {waitUntil: "load", timeout: NAV_TIMEOUT_MS});
             await page.waitForSelector("#storybook-root, #root", {timeout: NAV_TIMEOUT_MS}).catch(() => {});
             // Storybook renders thrown errors into #sb-errordisplay.
             const overlay: string | null = await page.evaluate(() => {
@@ -261,7 +273,7 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
             });
             if (overlay) errors.push("sb-errordisplay: " + overlay);
             await page.addStyleTag({content: STABILIZE_CSS}).catch(() => {});
-            await page.waitForTimeout(250);
+            await page.waitForTimeout(settleMs);
             if (errors.length === 0) {
                 const png = (await page.screenshot({type: "png", fullPage: false})) as Buffer;
                 shots.push({story, theme, device, width: viewport.width, height: viewport.height, png});
@@ -293,7 +305,8 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
         let lastBeat = Date.now();
         const worker = async (): Promise<void> => {
             // Each worker owns one context; colour scheme is emulated per page.
-            const context = await browser.newContext({deviceScaleFactor: 1});
+            // Pin locale + timezone so Intl works in a locale-less CI sandbox.
+            const context = await browser.newContext({deviceScaleFactor: 1, locale, timezoneId: timezone});
             try {
                 for (;;) {
                     const i = next++;
