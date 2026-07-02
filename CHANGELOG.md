@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/diffdeck/cli/compare/v1.1.0...v1.1.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* pin locale/timezone; faster settle + higher default concurrency ([57cbd54](https://github.com/diffdeck/cli/commit/57cbd540a62d5d9cb87043cf022f24ccde1059dd))
+
 ## [1.1.0](https://github.com/diffdeck/cli/compare/v1.0.0...v1.1.0) (2026-07-02)
 
 
