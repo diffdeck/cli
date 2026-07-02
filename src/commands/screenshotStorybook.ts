@@ -21,14 +21,17 @@
  */
 import http from "node:http";
 import os from "node:os";
-import {promises as fsp, readFileSync} from "node:fs";
+import {promises as fsp, readFileSync, existsSync} from "node:fs";
 import path from "node:path";
+import {execFileSync} from "node:child_process";
 import {createRequire} from "node:module";
 import {boolOption, ParsedArgs, stringOption} from "../args";
-import {DEFAULT_HOST, errorMessage, uploadMultipart, UploadFile} from "../http";
+import {AUTH_HEADER, buildUrl, DEFAULT_HOST, errorMessage, uploadMultipart, UploadFile} from "../http";
 import {createTarGz, countFiles} from "../tar";
+import {traceAffectedStories} from "../turbosnap";
 
 export const BUILDS_PATH = "/api/products/ui-review/builds";
+export const BASELINE_PATH = "/api/products/ui-review/builds/baseline";
 
 // The six-variant matrix — must match the server/product constants
 // (src/shared/products/ui-review/constants.ts).
@@ -68,7 +71,17 @@ Options:
   --settle <ms>         Wait after render before screenshot (default: 500).
   --token <token>       Project token. Defaults to $DIFFDECK_TOKEN.
   --host <url>          DiffDeck host. Defaults to $DIFFDECK_HOST or ${DEFAULT_HOST}.
+  --full                Force a full render (skip incremental/TurboSnap scoping).
+  --stats <path>        Webpack stats for incremental scoping (default: <dir>/preview-stats.json).
   --help                Show this help.
+
+Incremental rendering (TurboSnap):
+  When the built Storybook includes preview-stats.json (build with
+  \`storybook build --webpack-stats-json\`) and the repo has a baseline build,
+  only stories affected by files changed since the baseline are rendered; the
+  server carries the rest forward from the baseline. Falls back to a full render
+  when there's no baseline, no stats, no git history, or a global file changed.
+  Recommended: schedule a periodic --full run to bound any drift.
 
 Requires Playwright (with browsers) installed in the current project:
   npm i -D playwright && npx playwright install chromium
@@ -81,6 +94,8 @@ interface Story {
     id: string;
     title: string;
     name: string;
+    /** Source module path from index.json (e.g. "./stories/Foo.stories.tsx"). Empty if unknown. */
+    importPath: string;
 }
 
 interface Shot {
@@ -114,6 +129,7 @@ function fromEntries(map: Record<string, any> | undefined): Story[] {
             id: String(e.id),
             title: String(e.title ?? e.kind ?? ""),
             name: String(e.name ?? e.story ?? ""),
+            importPath: String(e.importPath ?? e.parameters?.fileName ?? ""),
         }))
         .filter((e) => e.id);
 }
@@ -241,6 +257,59 @@ async function switchStory(page: any, storyId: string): Promise<string | null> {
     }
 }
 
+interface Baseline {
+    buildId: string;
+    number: number | null;
+    commitSha: string;
+    branch: string;
+}
+
+/**
+ * Ask the server which build the new one would diff against (the resolved
+ * baseline) so we can `git diff <baselineSha>..HEAD`. Returns null on any
+ * failure — the caller then falls back to a full render.
+ */
+async function fetchBaseline(host: string, token: string, branch?: string): Promise<Baseline | null> {
+    try {
+        const qs = branch ? `?branch=${encodeURIComponent(branch)}` : "";
+        const res = await fetch(buildUrl(host, BASELINE_PATH) + qs, {headers: {[AUTH_HEADER]: token}});
+        if (!res.ok) {
+            console.error(`  (baseline lookup returned HTTP ${res.status}; rendering everything)`);
+            return null;
+        }
+        const body: any = await res.json().catch(() => null);
+        const b = body?.baseline;
+        if (!b?.commitSha) return null;
+        return {buildId: String(b.buildId), number: b.number ?? null, commitSha: String(b.commitSha), branch: String(b.branch ?? "")};
+    } catch (e: any) {
+        console.error(`  (baseline lookup failed: ${e?.message ?? e}; rendering everything)`);
+        return null;
+    }
+}
+
+/**
+ * Files changed between the baseline commit and HEAD, as repo-relative POSIX
+ * paths. Returns null if git can't answer (not a repo, unknown SHA, shallow
+ * clone missing the baseline) so the caller full-renders.
+ */
+function gitChangedFiles(baselineSha: string): string[] | null {
+    const run = (args: string[]): string | null => {
+        try {
+            return execFileSync("git", args, {encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]});
+        } catch {
+            return null;
+        }
+    };
+    // Confirm the baseline commit is present (a shallow CI clone may not have it).
+    if (run(["cat-file", "-e", `${baselineSha}^{commit}`]) === null) return null;
+    const out = run(["diff", "--name-only", `${baselineSha}..HEAD`]);
+    if (out === null) return null;
+    return out
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+}
+
 export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number> {
     if (boolOption(parsed.options, ["help", "h"])) {
         console.log(SCREENSHOT_HELP);
@@ -266,6 +335,9 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
     const timezone = stringOption(parsed.options, ["timezone", "tz"]) || "UTC";
     const settleRaw = Number(stringOption(parsed.options, ["settle", "settle-ms"]));
     const settleMs = Number.isFinite(settleRaw) && settleRaw >= 0 ? Math.floor(settleRaw) : 500;
+    const forceFull = boolOption(parsed.options, ["full", "no-incremental"]);
+    const statsPathOpt = stringOption(parsed.options, ["stats", "stats-json"]);
+    const baseShaOpt = stringOption(parsed.options, ["base-sha", "baseline-sha"]);
 
     if (!dir) {
         console.error("Error: --dir <storybook-static> is required.");
@@ -292,6 +364,60 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
         return 2;
     }
 
+    // Incremental (TurboSnap) scoping: figure out which stories to actually render.
+    // Falls back to rendering everything whenever we can't safely scope.
+    let renderStories = stories;
+    let incremental = false;
+    if (forceFull) {
+        console.error("Full render: --full requested.");
+    } else {
+        const statsPath = statsPathOpt || path.join(dir, "preview-stats.json");
+        if (!existsSync(statsPath)) {
+            console.error(
+                `Full render: no ${path.basename(statsPath)} ` +
+                    "(build Storybook with --webpack-stats-json to enable incremental rendering).",
+            );
+        } else {
+            let baseSha = baseShaOpt || "";
+            let baseNum: number | null = null;
+            if (!baseSha) {
+                const baseline = await fetchBaseline(host, token!, branch);
+                if (baseline?.commitSha) {
+                    baseSha = baseline.commitSha;
+                    baseNum = baseline.number ?? null;
+                }
+            }
+            if (!baseSha) {
+                console.error("Full render: no baseline build to diff against yet.");
+            } else {
+                const changed = gitChangedFiles(baseSha);
+                if (!changed) {
+                    console.error(`Full render: couldn't git-diff from baseline ${baseSha.slice(0, 8)} (shallow clone?).`);
+                } else {
+                    const trace = traceAffectedStories({
+                        statsPath,
+                        changedFiles: changed,
+                        stories: stories.map((s) => ({id: s.id, importPath: s.importPath})),
+                    });
+                    if (trace.full) {
+                        console.error(`Full render: ${trace.reason}.`);
+                    } else {
+                        const affected = new Set(trace.affectedStoryIds);
+                        // Stories with no importPath can't be traced — render them to be safe.
+                        renderStories = stories.filter((s) => affected.has(s.id) || !s.importPath);
+                        incremental = true;
+                        const at = baseNum != null ? ` baseline #${baseNum},` : "";
+                        console.error(
+                            `Incremental:${at} ${changed.length} file(s) changed → ` +
+                                `rendering ${renderStories.length}/${stories.length} story(ies), ` +
+                                `carrying ${stories.length - renderStories.length} forward.`,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     const shots: Shot[] = [];
     const failures: RenderFailure[] = [];
 
@@ -303,17 +429,17 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
     const lanes: {theme: Theme; device: string}[] = [];
     for (const theme of THEMES) for (const device of DEVICES) lanes.push({theme, device});
     const chunksPerLane = Math.max(1, Math.round(concurrency / lanes.length));
-    const chunkSize = Math.max(1, Math.ceil(stories.length / chunksPerLane));
+    const chunkSize = Math.max(1, Math.ceil(renderStories.length / chunksPerLane));
     const chunks: {theme: Theme; device: string; stories: Story[]}[] = [];
     for (const lane of lanes)
-        for (let i = 0; i < stories.length; i += chunkSize)
-            chunks.push({theme: lane.theme, device: lane.device, stories: stories.slice(i, i + chunkSize)});
+        for (let i = 0; i < renderStories.length; i += chunkSize)
+            chunks.push({theme: lane.theme, device: lane.device, stories: renderStories.slice(i, i + chunkSize)});
 
-    const total = stories.length * lanes.length;
+    const total = renderStories.length * lanes.length;
     const t0 = Date.now();
     const workerCount = Math.max(1, Math.min(concurrency, chunks.length || 1));
     console.error(
-        `Rendering ${total} variant(s) — ${stories.length} story(ies) × ${THEMES.length} theme(s) × ${DEVICES.length} device(s) — ` +
+        `Rendering ${total} variant(s) — ${renderStories.length} story(ies) × ${THEMES.length} theme(s) × ${DEVICES.length} device(s) — ` +
             `with ${workerCount} parallel worker(s), in-page switching...`,
     );
 
@@ -441,7 +567,7 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
     }
 
     console.error(
-        `Rendered ${shots.length} screenshot(s) across ${stories.length} story(ies) in ${((Date.now() - t0) / 1000).toFixed(1)}s.`,
+        `Rendered ${shots.length} screenshot(s) across ${renderStories.length} story(ies) in ${((Date.now() - t0) / 1000).toFixed(1)}s.`,
     );
 
     // Pack the build (for hosted browsing) + attach one PNG per screenshot.
@@ -480,7 +606,15 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
         host,
         pathname: BUILDS_PATH,
         token,
-        fields: {branch, commitSha, commitMessage, screenshots: JSON.stringify(manifest)},
+        fields: {
+            branch,
+            commitSha,
+            commitMessage,
+            screenshots: JSON.stringify(manifest),
+            // Incremental: tell the server the full story set so it can carry the
+            // unrendered ones forward from the baseline by reference.
+            ...(incremental ? {incremental: "true", allStoryIds: JSON.stringify(stories.map((s) => s.id))} : {}),
+        },
         files,
     });
 
