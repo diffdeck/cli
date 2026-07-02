@@ -20,6 +20,7 @@
  *         manifest), plus one PNG form field per screenshot (shot0, shot1, …).
  */
 import http from "node:http";
+import os from "node:os";
 import {promises as fsp, readFileSync} from "node:fs";
 import path from "node:path";
 import {createRequire} from "node:module";
@@ -61,6 +62,7 @@ Options:
   --branch <name>       Git branch name. Defaults to the repo's default branch server-side.
   --commit <sha>        Git commit SHA. Required.
   --message <text>      Git commit message (optional).
+  --concurrency <n>     Parallel render workers (default: CPU count, capped 2–8). Alias: --jobs/-j.
   --token <token>       Project token. Defaults to $DIFFDECK_TOKEN.
   --host <url>          DiffDeck host. Defaults to $DIFFDECK_HOST or ${DEFAULT_HOST}.
   --help                Show this help.
@@ -191,6 +193,10 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
     const branch = stringOption(parsed.options, ["branch", "b"]);
     const commitSha = stringOption(parsed.options, ["commit", "commit-sha", "commitSha", "c"]);
     const commitMessage = stringOption(parsed.options, ["message", "commit-message", "m"]);
+    const cpuCount = os.cpus()?.length || 4;
+    const defaultConcurrency = Math.max(2, Math.min(cpuCount, 8));
+    const concurrencyRaw = Number(stringOption(parsed.options, ["concurrency", "jobs", "j"]));
+    const concurrency = Number.isFinite(concurrencyRaw) && concurrencyRaw > 0 ? Math.floor(concurrencyRaw) : defaultConcurrency;
 
     if (!dir) {
         console.error("Error: --dir <storybook-static> is required.");
@@ -220,62 +226,96 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
     const shots: Shot[] = [];
     const failures: RenderFailure[] = [];
 
+    // Flatten the whole matrix into one job queue. Colour scheme is applied per
+    // page via emulateMedia (not per context), so a single pool of workers can
+    // render any theme/device/story combination — maximising parallelism.
+    const jobs: {story: Story; theme: Theme; device: string}[] = [];
+    for (const theme of THEMES) for (const story of stories) for (const device of DEVICES) jobs.push({story, theme, device});
+    const total = jobs.length;
+
+    const render = async (context: any, job: {story: Story; theme: Theme; device: string}): Promise<boolean> => {
+        const {story, theme, device} = job;
+        const viewport = DEVICE_VIEWPORTS[device];
+        const page = await context.newPage();
+        const errors: string[] = [];
+        page.on("pageerror", (err: any) => errors.push("pageerror: " + String(err?.message || err).split("\n")[0]));
+        page.on("console", (msg: any) => {
+            if (msg.type() === "error") {
+                const t = msg.text();
+                if (!BENIGN_CONSOLE.test(t)) errors.push("console.error: " + t.split("\n")[0].slice(0, 300));
+            }
+        });
+        try {
+            await page.emulateMedia({colorScheme: theme});
+            await page.setViewportSize(viewport);
+            const url = `${site.origin}/iframe.html?id=${encodeURIComponent(story.id)}&viewMode=story`;
+            await page.goto(url, {waitUntil: "networkidle", timeout: NAV_TIMEOUT_MS});
+            await page.waitForSelector("#storybook-root, #root", {timeout: NAV_TIMEOUT_MS}).catch(() => {});
+            // Storybook renders thrown errors into #sb-errordisplay.
+            const overlay: string | null = await page.evaluate(() => {
+                const d = (globalThis as any).document;
+                const el = d.querySelector("#sb-errordisplay, .sb-errordisplay");
+                if (!el) return null;
+                const m = d.querySelector("#error-message, .sb-errordisplay_emphasize");
+                return String(m?.textContent || el.textContent || "story error").trim().slice(0, 300);
+            });
+            if (overlay) errors.push("sb-errordisplay: " + overlay);
+            await page.addStyleTag({content: STABILIZE_CSS}).catch(() => {});
+            await page.waitForTimeout(250);
+            if (errors.length === 0) {
+                const png = (await page.screenshot({type: "png", fullPage: false})) as Buffer;
+                shots.push({story, theme, device, width: viewport.width, height: viewport.height, png});
+            }
+        } catch (err: any) {
+            errors.push("goto: " + String(err?.message || err).split("\n")[0]);
+        } finally {
+            await page.close().catch(() => {});
+        }
+        if (errors.length) {
+            failures.push({id: story.id, variant: `${theme}/${device}`, errors: [...new Set(errors)]});
+            return false;
+        }
+        return true;
+    };
+
+    const t0 = Date.now();
+    const workerCount = Math.max(1, Math.min(concurrency, total));
+    console.error(
+        `Rendering ${total} variant(s) — ${stories.length} story(ies) × ${THEMES.length} theme(s) × ${DEVICES.length} device(s) — with ${workerCount} parallel worker(s)...`,
+    );
+
     const site = await serveDir(dir);
     let browser: any;
     try {
         browser = await chromium.launch({headless: true});
-        for (const theme of THEMES) {
-            const context = await browser.newContext({colorScheme: theme, deviceScaleFactor: 1});
+        let next = 0;
+        let done = 0;
+        let lastBeat = Date.now();
+        const worker = async (): Promise<void> => {
+            // Each worker owns one context; colour scheme is emulated per page.
+            const context = await browser.newContext({deviceScaleFactor: 1});
             try {
-                for (const story of stories) {
-                    for (const device of DEVICES) {
-                        const viewport = DEVICE_VIEWPORTS[device];
-                        const page = await context.newPage();
-                        const errors: string[] = [];
-                        page.on("pageerror", (err: any) =>
-                            errors.push("pageerror: " + String(err?.message || err).split("\n")[0]),
-                        );
-                        page.on("console", (msg: any) => {
-                            if (msg.type() === "error") {
-                                const t = msg.text();
-                                if (!BENIGN_CONSOLE.test(t)) errors.push("console.error: " + t.split("\n")[0].slice(0, 300));
-                            }
-                        });
-                        try {
-                            await page.setViewportSize(viewport);
-                            const url =
-                                `${site.origin}/iframe.html?id=${encodeURIComponent(story.id)}&viewMode=story`;
-                            await page.goto(url, {waitUntil: "networkidle", timeout: NAV_TIMEOUT_MS});
-                            await page.waitForSelector("#storybook-root, #root", {timeout: NAV_TIMEOUT_MS}).catch(() => {});
-                            // Storybook renders thrown errors into #sb-errordisplay.
-                            const overlay: string | null = await page.evaluate(() => {
-                                const d = (globalThis as any).document;
-                                const el = d.querySelector("#sb-errordisplay, .sb-errordisplay");
-                                if (!el) return null;
-                                const m = d.querySelector("#error-message, .sb-errordisplay_emphasize");
-                                return String(m?.textContent || el.textContent || "story error").trim().slice(0, 300);
-                            });
-                            if (overlay) errors.push("sb-errordisplay: " + overlay);
-                            await page.addStyleTag({content: STABILIZE_CSS}).catch(() => {});
-                            await page.waitForTimeout(250);
-                            if (errors.length === 0) {
-                                const png = (await page.screenshot({type: "png", fullPage: false})) as Buffer;
-                                shots.push({story, theme, device, width: viewport.width, height: viewport.height, png});
-                            }
-                        } catch (err: any) {
-                            errors.push("goto: " + String(err?.message || err).split("\n")[0]);
-                        } finally {
-                            await page.close().catch(() => {});
-                        }
-                        if (errors.length) {
-                            failures.push({id: story.id, variant: `${theme}/${device}`, errors: [...new Set(errors)]});
-                        }
-                    }
+                for (;;) {
+                    const i = next++;
+                    if (i >= jobs.length) break;
+                    const job = jobs[i];
+                    const ok = await render(context, job);
+                    done++;
+                    const elapsed = (Date.now() - t0) / 1000;
+                    const rate = done / Math.max(elapsed, 0.001);
+                    const eta = rate > 0 ? (total - done) / rate : 0;
+                    console.error(
+                        `  [${String(done).padStart(String(total).length)}/${total}] ${ok ? "✓" : "✗"} ` +
+                            `${job.theme}/${job.device} ${job.story.id}` +
+                            (done === total || Date.now() - lastBeat > 2000 ? `  (${elapsed.toFixed(0)}s, ~${eta.toFixed(0)}s left)` : ""),
+                    );
+                    if (Date.now() - lastBeat > 2000) lastBeat = Date.now();
                 }
             } finally {
                 await context.close().catch(() => {});
             }
-        }
+        };
+        await Promise.all(Array.from({length: workerCount}, () => worker()));
     } finally {
         if (browser) await browser.close().catch(() => {});
         await site.close();
@@ -292,7 +332,9 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
         return 1;
     }
 
-    console.error(`Rendered ${shots.length} screenshot(s) across ${stories.length} story(ies).`);
+    console.error(
+        `Rendered ${shots.length} screenshot(s) across ${stories.length} story(ies) in ${((Date.now() - t0) / 1000).toFixed(1)}s.`,
+    );
 
     // Pack the build (for hosted browsing) + attach one PNG per screenshot.
     let tarball: Buffer;
