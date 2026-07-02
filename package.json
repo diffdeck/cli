@@ -1,6 +1,6 @@
 {
   "name": "@diffdeckai/cli",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "DiffDeck upload CLI — push Storybook builds and Playwright recordings to DiffDeck from any CI.",
   "license": "MIT",
   "homepage": "https://github.com/diffdeck/cli#readme",
