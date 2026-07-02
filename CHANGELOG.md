@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/diffdeck/cli/compare/v1.3.0...v1.4.0) (2026-07-02)
+
+
+### Features
+
+* send the repository default branch with Storybook uploads ([#7](https://github.com/diffdeck/cli/issues/7)) ([5cdf54a](https://github.com/diffdeck/cli/commit/5cdf54af6605c55ae58cb5a47718542a0bcbd44c))
+
 ## [1.3.0](https://github.com/diffdeck/cli/compare/v1.2.0...v1.3.0) (2026-07-02)
 
 
