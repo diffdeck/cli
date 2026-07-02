@@ -21,6 +21,8 @@ Options:
   --branch <name>       Git branch name. Defaults to the repo's default branch server-side.
   --commit <sha>        Git commit SHA. Required.
   --message <text>      Git commit message (optional).
+  --default-branch <b>  Repository default branch (from CI). Persisted server-side so
+                        PR baselines resolve against it.
   --token <token>       Project token. Defaults to $DIFFDECK_TOKEN.
   --host <url>          DiffDeck host. Defaults to $DIFFDECK_HOST or ${DEFAULT_HOST}.
   --help                Show this help.
@@ -41,6 +43,7 @@ export async function runUploadStorybook(parsed: ParsedArgs): Promise<number> {
     const branch = stringOption(parsed.options, ["branch", "b"]);
     const commitSha = stringOption(parsed.options, ["commit", "commit-sha", "commitSha", "c"]);
     const commitMessage = stringOption(parsed.options, ["message", "commit-message", "m"]);
+    const defaultBranch = stringOption(parsed.options, ["default-branch", "defaultBranch"]);
 
     if (!dir) {
         console.error("Error: --dir <storybook-static> is required.");
@@ -71,7 +74,7 @@ export async function runUploadStorybook(parsed: ParsedArgs): Promise<number> {
         host,
         pathname: BUILDS_PATH,
         token,
-        fields: {branch, commitSha, commitMessage},
+        fields: {branch, commitSha, commitMessage, defaultBranch},
         files: [
             {
                 field: "build",
