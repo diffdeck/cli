@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/diffdeck/cli/compare/v1.2.0...v1.3.0) (2026-07-02)
+
+
+### Features
+
+* incremental (TurboSnap) rendering for screenshot-storybook ([48e7710](https://github.com/diffdeck/cli/commit/48e7710a87838188d1610f73684b21b898f43e8f))
+
 ## [1.2.0](https://github.com/diffdeck/cli/compare/v1.1.1...v1.2.0) (2026-07-02)
 
 
