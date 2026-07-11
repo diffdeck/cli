@@ -67,6 +67,8 @@ Options:
   --message <text>      Git commit message (optional).
   --default-branch <b>  Repository default branch (from CI). Persisted server-side so
                         PR baselines resolve against it.
+  --pr-number <n>       Pull request number (from CI). Persisted server-side so the
+                        build deep-links straight to the exact PR.
   --concurrency <n>     Parallel render workers (default: ~3× CPU count, capped 4–16). Alias: --jobs/-j.
   --locale <tag>        Browser locale (default: en-US). Fixes Intl throwing in locale-less CI.
   --timezone <tz>       Browser timezone (default: UTC). Alias: --tz.
@@ -325,6 +327,7 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
     const commitSha = stringOption(parsed.options, ["commit", "commit-sha", "commitSha", "c"]);
     const commitMessage = stringOption(parsed.options, ["message", "commit-message", "m"]);
     const defaultBranch = stringOption(parsed.options, ["default-branch", "defaultBranch"]);
+    const prNumber = stringOption(parsed.options, ["pr-number", "prNumber"]);
     // Rendering is largely idle-wait (navigation + settle), so we oversubscribe
     // cores: concurrent pages far exceed the core count profitably.
     const cpuCount = os.cpus()?.length || 4;
@@ -614,6 +617,7 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
             commitSha,
             commitMessage,
             defaultBranch,
+            prNumber,
             screenshots: JSON.stringify(manifest),
             // Incremental: tell the server the full story set so it can carry the
             // unrendered ones forward from the baseline by reference.
