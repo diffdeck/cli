@@ -33,11 +33,14 @@ jobs:
       - uses: actions/setup-node@v4
         if: ${{ steps.release.outputs.release_created == 'true' }}
         with:
-          node-version: 20
+          node-version: 22
           registry-url: "https://registry.npmjs.org"
       - name: Ensure npm supports trusted publishing
         if: ${{ steps.release.outputs.release_created == 'true' }}
-        run: npm install -g npm@latest # trusted publishing needs npm >= 11.5.1
+        # Trusted publishing needs npm >= 11.5.1. Pin to the 11.x line: `npm@latest`
+        # (now 12.x) dropped Node 20 and needs Node >= 22.22, which broke this step;
+        # npm 11.x supports trusted publishing on Node 22 without chasing latest.
+        run: npm install -g npm@11
       - run: npm ci
         if: ${{ steps.release.outputs.release_created == 'true' }}
       - run: npm run build
