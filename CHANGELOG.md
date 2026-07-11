@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/diffdeck/cli/compare/v1.5.0...v1.5.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* unbreak npm trusted-publishing step in the release workflow ([#11](https://github.com/diffdeck/cli/issues/11)) ([1184d20](https://github.com/diffdeck/cli/commit/1184d20e7069e594a6aed20dd0823ffa4487b190))
+
 ## [1.5.0](https://github.com/diffdeck/cli/compare/v1.4.0...v1.5.0) (2026-07-11)
 
 
