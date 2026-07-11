@@ -48,6 +48,8 @@ diffdeck upload-storybook --dir storybook-static \
 | `--commit <sha>` | Git commit SHA. **Required.** |
 | `--branch <name>` | Git branch name. Defaults to the repo's default branch server-side. |
 | `--message <text>` | Git commit message. Optional. |
+| `--default-branch <b>` | Repository default branch (from CI). Persisted server-side so PR baselines resolve against it. Optional. |
+| `--pr-number <n>` | Pull request number (from CI). Persisted server-side so the build deep-links straight to the exact PR. Optional. |
 | `--token <token>` | Project token. Defaults to `$DIFFDECK_TOKEN`. |
 | `--host <url>` | DiffDeck host. Defaults to `$DIFFDECK_HOST` or `https://diffdeck.ai`. |
 
@@ -82,6 +84,8 @@ diffdeck screenshot-storybook --dir storybook-static \
 | `--commit <sha>` | Git commit SHA. **Required.** |
 | `--branch <name>` | Git branch name. Defaults to the repo's default branch server-side. |
 | `--message <text>` | Git commit message. Optional. |
+| `--default-branch <b>` | Repository default branch (from CI). Persisted server-side so PR baselines resolve against it. Optional. |
+| `--pr-number <n>` | Pull request number (from CI). Persisted server-side so the build deep-links straight to the exact PR. Optional. |
 | `--token <token>` | Project token. Defaults to `$DIFFDECK_TOKEN`. |
 | `--host <url>` | DiffDeck host. Defaults to `$DIFFDECK_HOST` or `https://diffdeck.ai`. |
 
