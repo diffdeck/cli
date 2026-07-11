@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/diffdeck/cli/compare/v1.4.0...v1.5.0) (2026-07-11)
+
+
+### Features
+
+* forward the pull request number to the builds API ([#9](https://github.com/diffdeck/cli/issues/9)) ([a1c509a](https://github.com/diffdeck/cli/commit/a1c509aebc5668b01bd82a1bbef57c32ca55d8af))
+
 ## [1.4.0](https://github.com/diffdeck/cli/compare/v1.3.0...v1.4.0) (2026-07-02)
 
 
