@@ -304,8 +304,16 @@ function gitChangedFiles(baselineSha: string): string[] | null {
             return null;
         }
     };
+    const hasCommit = () => run(["cat-file", "-e", `${baselineSha}^{commit}`]) !== null;
     // Confirm the baseline commit is present (a shallow CI clone may not have it).
-    if (run(["cat-file", "-e", `${baselineSha}^{commit}`]) === null) return null;
+    // GitHub's actions/checkout defaults to fetch-depth: 1, so the baseline commit
+    // is usually absent. Try to fetch just that commit before giving up — GitHub
+    // allows fetching a specific SHA, and `git diff A..HEAD` only needs both
+    // endpoint trees (not the connecting history), so a depth-1 fetch is enough.
+    if (!hasCommit()) {
+        run(["fetch", "--depth=1", "origin", baselineSha]);
+        if (!hasCommit()) return null;
+    }
     const out = run(["diff", "--name-only", `${baselineSha}..HEAD`]);
     if (out === null) return null;
     return out
@@ -398,7 +406,10 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
             } else {
                 const changed = gitChangedFiles(baseSha);
                 if (!changed) {
-                    console.error(`Full render: couldn't git-diff from baseline ${baseSha.slice(0, 8)} (shallow clone?).`);
+                    console.error(
+                        `Full render: couldn't git-diff from baseline ${baseSha.slice(0, 8)} ` +
+                            "(commit not fetchable — check out with fetch-depth: 0 to enable incremental rendering).",
+                    );
                 } else {
                     const trace = traceAffectedStories({
                         statsPath,
