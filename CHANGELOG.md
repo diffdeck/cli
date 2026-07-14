@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.2](https://github.com/diffdeck/cli/compare/v1.5.1...v1.5.2) (2026-07-14)
+
+
+### Bug Fixes
+
+* fetch baseline commit on demand so incremental rendering works on shallow clones ([#13](https://github.com/diffdeck/cli/issues/13)) ([e39932c](https://github.com/diffdeck/cli/commit/e39932c6d6154670c86bea198738adb04b01f92d))
+
 ## [1.5.1](https://github.com/diffdeck/cli/compare/v1.5.0...v1.5.1) (2026-07-11)
 
 
