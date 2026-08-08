@@ -77,6 +77,13 @@ Options:
   --host <url>          DiffDeck host. Defaults to $DIFFDECK_HOST or ${DEFAULT_HOST}.
   --full                Force a full render (skip incremental/TurboSnap scoping).
   --stats <path>        Webpack stats for incremental scoping (default: <dir>/preview-stats.json).
+  --global <res>        Comma-separated regexes of extra paths that force a full render
+                        (in addition to the built-in globals: lockfiles, .storybook/, …).
+  --global-exclude <res> Comma-separated regexes of paths to EXEMPT from the global rule,
+                        so they're scoped via the module graph instead. Use for story
+                        fixtures/mocks under .storybook/ that only specific stories use
+                        (e.g. '(^|/)\\.storybook/mocks/'). A file excused this way that
+                        isn't found in the bundle graph still triggers a full render.
   --help                Show this help.
 
 Incremental rendering (TurboSnap):
@@ -352,6 +359,28 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
     const forceFull = boolOption(parsed.options, ["full", "no-incremental"]);
     const statsPathOpt = stringOption(parsed.options, ["stats", "stats-json"]);
     const baseShaOpt = stringOption(parsed.options, ["base-sha", "baseline-sha"]);
+    // Configurable TurboSnap scoping. `--global` adds paths that force a full
+    // render; `--global-exclude` excuses paths from the (built-in + extra) global
+    // rules so they're traced through the module graph instead — e.g. story
+    // fixtures under `.storybook/`. Both take a comma-separated list of JS regexes
+    // (matched against repo-relative POSIX paths). An invalid regex is warned and
+    // skipped rather than aborting the run.
+    const parsePatterns = (raw: string | undefined, label: string): RegExp[] =>
+        (raw ?? "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+            .map((s) => {
+                try {
+                    return new RegExp(s);
+                } catch (e: any) {
+                    console.error(`  (ignoring invalid ${label} pattern ${JSON.stringify(s)}: ${e?.message ?? e})`);
+                    return null;
+                }
+            })
+            .filter((re): re is RegExp => re !== null);
+    const extraGlobalPatterns = parsePatterns(stringOption(parsed.options, ["global", "global-pattern"]), "--global");
+    const globalExcludePatterns = parsePatterns(stringOption(parsed.options, ["global-exclude", "not-global"]), "--global-exclude");
 
     if (!dir) {
         console.error("Error: --dir <storybook-static> is required.");
@@ -415,6 +444,8 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
                         statsPath,
                         changedFiles: changed,
                         stories: stories.map((s) => ({id: s.id, importPath: s.importPath})),
+                        extraGlobalPatterns,
+                        globalExcludePatterns,
                     });
                     if (trace.full) {
                         console.error(`Full render: ${trace.reason}.`);

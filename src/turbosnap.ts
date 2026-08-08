@@ -72,12 +72,17 @@ export interface TraceResult {
  * @param changedFiles  repo-relative POSIX paths changed since the baseline
  * @param stories  every story with its source importPath (from index.json)
  * @param extraGlobalPatterns  additional "force full render" path regexes
+ * @param globalExcludePatterns  paths to EXEMPT from the global rule (trace via the
+ *        graph instead) — e.g. story fixtures under `.storybook/` that are actually
+ *        imported by specific stories. A safety net still full-renders if such a
+ *        file can't be found in the bundle graph (see below).
  */
 export function traceAffectedStories(opts: {
     statsPath: string;
     changedFiles: string[];
     stories: {id: string; importPath: string}[];
     extraGlobalPatterns?: RegExp[];
+    globalExcludePatterns?: RegExp[];
 }): TraceResult {
     const changed = opts.changedFiles.map(normalizeGitPath).filter(Boolean);
     if (changed.length === 0) {
@@ -85,7 +90,16 @@ export function traceAffectedStories(opts: {
     }
 
     const globals = [...DEFAULT_GLOBAL_PATTERNS, ...(opts.extraGlobalPatterns ?? [])];
-    const globalHit = changed.find((f) => globals.some((re) => re.test(f)));
+    const excludes = opts.globalExcludePatterns ?? [];
+    // A file is "global" (forces a full render) if it matches a global pattern AND
+    // is NOT excused by a global-exclude pattern. Excludes let a project opt a
+    // conventionally-global path back into normal graph tracing — e.g. story
+    // fixture/mocks that live under `.storybook/` but are imported by (or replace
+    // modules imported by) specific stories, so their impact IS traceable and
+    // shouldn't nuke the whole render.
+    const matchesGlobal = (f: string) => globals.some((re) => re.test(f));
+    const isExcluded = (f: string) => excludes.some((re) => re.test(f));
+    const globalHit = changed.find((f) => matchesGlobal(f) && !isExcluded(f));
     if (globalHit) {
         return {full: true, affectedStoryIds: [], reason: `global file changed: ${globalHit}`};
     }
@@ -135,6 +149,20 @@ export function traceAffectedStories(opts: {
         }
     };
     for (const m of modules) indexModule(m);
+
+    // Safety net for global-excludes: a file that WOULD be global but was excused
+    // (so it could be traced) yet ISN'T in the bundle graph can't be scoped — it
+    // may still affect rendering, so fall back to a full render rather than
+    // silently carry stale screenshots forward. This makes an over-broad or
+    // mistyped exclude fail safe (over-render), never unsafe (under-render).
+    const untraceableExcluded = changed.find((f) => matchesGlobal(f) && isExcluded(f) && !known.has(f));
+    if (untraceableExcluded) {
+        return {
+            full: true,
+            affectedStoryIds: [],
+            reason: `global-excluded file not found in the bundle graph (can't scope it): ${untraceableExcluded}`,
+        };
+    }
 
     // Seed: changed files that ARE in the bundle. A changed file that's NOT in the
     // bundle and NOT a global (checked above) can't affect any story's render.
