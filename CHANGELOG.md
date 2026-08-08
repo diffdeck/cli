@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/diffdeck/cli/compare/v1.5.2...v1.6.0) (2026-08-08)
+
+
+### Features
+
+* configurable TurboSnap global-file rules (--global / --global-exclude) ([#15](https://github.com/diffdeck/cli/issues/15)) ([9b1889e](https://github.com/diffdeck/cli/commit/9b1889eef7bc09e5689a22373d90040d31ba9fac))
+
 ## [1.5.2](https://github.com/diffdeck/cli/compare/v1.5.1...v1.5.2) (2026-07-14)
 
 
