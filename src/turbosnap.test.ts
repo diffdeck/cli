@@ -86,3 +86,64 @@ test("unreadable stats forces a full render", () => {
     const r = traceAffectedStories({statsPath: "/no/such/stats.json", changedFiles: ["src/Button.tsx"], stories: STORIES});
     assert.equal(r.full, true);
 });
+
+// A graph where a fixture under .storybook/mocks is imported by exactly one story
+// (like kavaro's alamData.ts → Alam.stories.tsx) — the case global-exclude targets.
+function writeStatsWithMock(): string {
+    const stats = {
+        modules: [
+            {name: "./.storybook/mocks/alamData.ts", reasons: [{moduleName: "./stories/Alam.stories.tsx"}]},
+            {name: "./stories/Alam.stories.tsx", reasons: [{moduleName: "./.storybook/generated-entry.js"}]},
+            {name: "./stories/Button.stories.tsx", reasons: [{moduleName: "./.storybook/generated-entry.js"}]},
+        ],
+    };
+    const dir = mkdtempSync(path.join(tmpdir(), "dd-stats-"));
+    const p = path.join(dir, "preview-stats.json");
+    writeFileSync(p, JSON.stringify(stats));
+    return p;
+}
+const MOCK_STORIES = [
+    {id: "alam--default", importPath: "./stories/Alam.stories.tsx"},
+    {id: "button--primary", importPath: "./stories/Button.stories.tsx"},
+];
+const STORYBOOK_MOCKS = [/(^|\/)\.storybook\/mocks\//];
+
+test("without global-exclude, a .storybook/mocks change forces a full render", () => {
+    const r = traceAffectedStories({
+        statsPath: writeStatsWithMock(),
+        changedFiles: [".storybook/mocks/alamData.ts"],
+        stories: MOCK_STORIES,
+    });
+    assert.equal(r.full, true);
+});
+
+test("global-exclude scopes a .storybook/mocks change to only its dependent stories", () => {
+    const r = traceAffectedStories({
+        statsPath: writeStatsWithMock(),
+        changedFiles: [".storybook/mocks/alamData.ts"],
+        stories: MOCK_STORIES,
+        globalExcludePatterns: STORYBOOK_MOCKS,
+    });
+    assert.equal(r.full, false);
+    assert.deepEqual(r.affectedStoryIds, ["alam--default"]);
+});
+
+test("global-exclude still full-renders when the excused file isn't in the bundle graph (fail-safe)", () => {
+    const r = traceAffectedStories({
+        statsPath: writeStatsWithMock(),
+        changedFiles: [".storybook/mocks/unbundled.ts"], // matches exclude but not in stats
+        stories: MOCK_STORIES,
+        globalExcludePatterns: STORYBOOK_MOCKS,
+    });
+    assert.equal(r.full, true);
+});
+
+test("extraGlobalPatterns forces a full render for an otherwise-traceable path", () => {
+    const r = traceAffectedStories({
+        statsPath: writeStatsWithMock(),
+        changedFiles: ["stories/Button.stories.tsx"],
+        stories: MOCK_STORIES,
+        extraGlobalPatterns: [/(^|\/)stories\//],
+    });
+    assert.equal(r.full, true);
+});
