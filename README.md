@@ -29,6 +29,26 @@ export DIFFDECK_TOKEN=ddp_xxxxxxxxxxxxxxxx
 export DIFFDECK_HOST=https://diffdeck.ai   # optional
 ```
 
+## Monorepos: multiple products per repo
+
+One repository can hold several independently reviewed DiffDeck **products** — e.g. a
+`web-app` and an `admin` Storybook in the same monorepo. Pass a product key with
+`--product <key>` (or `DIFFDECK_PRODUCT`) on every command. Each product gets its own
+baselines, build numbers, capture settings and GitHub check
+(`DiffDeck / Visual review (<key>)`); everything else works exactly as for a single-product
+repo. The same project token covers all products in the repo.
+
+- Keys are lowercase letters, digits, `.`, `_` and `-` (starting with a letter or digit,
+  max 64 chars).
+- Products are created automatically on their first upload — no setup in the UI.
+- Omitting the key uses the repo's **default** product, so existing single-product setups
+  keep working unchanged.
+
+```bash
+diffdeck screenshot-storybook --dir apps/web/storybook-static --product web-app --commit "$GITHUB_SHA"
+diffdeck screenshot-storybook --dir apps/admin/storybook-static --product admin --commit "$GITHUB_SHA"
+```
+
 ## Commands
 
 ### `upload-storybook`
@@ -50,6 +70,7 @@ diffdeck upload-storybook --dir storybook-static \
 | `--message <text>` | Git commit message. Optional. |
 | `--default-branch <b>` | Repository default branch (from CI). Persisted server-side so PR baselines resolve against it. Optional. |
 | `--pr-number <n>` | Pull request number (from CI). Persisted server-side so the build deep-links straight to the exact PR. Optional. |
+| `--product <key>` | Monorepo product key (see [Monorepos](#monorepos-multiple-products-per-repo)). Defaults to `$DIFFDECK_PRODUCT`, else the repo's default product. |
 | `--token <token>` | Project token. Defaults to `$DIFFDECK_TOKEN`. |
 | `--host <url>` | DiffDeck host. Defaults to `$DIFFDECK_HOST` or `https://diffdeck.ai`. |
 
@@ -86,6 +107,7 @@ diffdeck screenshot-storybook --dir storybook-static \
 | `--message <text>` | Git commit message. Optional. |
 | `--default-branch <b>` | Repository default branch (from CI). Persisted server-side so PR baselines resolve against it. Optional. |
 | `--pr-number <n>` | Pull request number (from CI). Persisted server-side so the build deep-links straight to the exact PR. Optional. |
+| `--product <key>` | Monorepo product key (see [Monorepos](#monorepos-multiple-products-per-repo)). Defaults to `$DIFFDECK_PRODUCT`, else the repo's default product. |
 | `--token <token>` | Project token. Defaults to `$DIFFDECK_TOKEN`. |
 | `--host <url>` | DiffDeck host. Defaults to `$DIFFDECK_HOST` or `https://diffdeck.ai`. |
 
@@ -119,6 +141,7 @@ diffdeck upload-recording --video test-results/home.webm \
 | `--metadata <json>` | Extra metadata as a JSON string. |
 | `--branch <name>` | Git branch name. |
 | `--commit <sha>` | Git commit SHA. |
+| `--product <key>` | Monorepo product key — links the recording to that product's build. Defaults to `$DIFFDECK_PRODUCT`. |
 | `--token <token>` | Project token. Defaults to `$DIFFDECK_TOKEN`. |
 | `--host <url>` | DiffDeck host. Defaults to `$DIFFDECK_HOST` or `https://diffdeck.ai`. |
 

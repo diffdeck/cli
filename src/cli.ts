@@ -36,6 +36,11 @@ Authentication:
   the X-UI-Review-Token header. The host defaults to ${DEFAULT_HOST} and can be
   overridden with --host or DIFFDECK_HOST.
 
+Monorepos:
+  Pass --product <key> (or DIFFDECK_PRODUCT) to review part of a repository as its
+  own DiffDeck product — separate baselines, build numbers and GitHub check. Products
+  are created automatically on first upload; omit the key to use the default product.
+
 Examples:
   diffdeck upload-storybook --dir storybook-static --commit "$GITHUB_SHA" --branch main
   diffdeck upload-recording --video test.webm --test "Home renders" --status passed`;

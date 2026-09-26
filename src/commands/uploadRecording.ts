@@ -4,14 +4,14 @@
  *
  * Target: POST <host>/api/products/ui-review/recordings
  * Fields: video, testTitle, testFile, testId, status, durationMs, retries, branch,
- *         commitSha, metadata.
+ *         commitSha, metadata, product.
  *
  * Recordings are a separately-priced add-on; the server returns 402 when not enabled
  * for the repository — we surface that with a clear message.
  */
 import path from "node:path";
 import {promises as fs} from "node:fs";
-import {boolOption, ParsedArgs, stringOption} from "../args";
+import {boolOption, ParsedArgs, productOption, stringOption} from "../args";
 import {DEFAULT_HOST, errorMessage, uploadMultipart} from "../http";
 
 export const RECORDINGS_PATH = "/api/products/ui-review/recordings";
@@ -32,13 +32,16 @@ Options:
   --metadata <json>     Extra metadata as a JSON string.
   --branch <name>       Git branch name.
   --commit <sha>        Git commit SHA.
+  --product <key>       Monorepo product key — links the recording to that product's
+                        build for the commit. Defaults to $DIFFDECK_PRODUCT.
   --token <token>       Project token. Defaults to $DIFFDECK_TOKEN.
   --host <url>          DiffDeck host. Defaults to $DIFFDECK_HOST or ${DEFAULT_HOST}.
   --help                Show this help.
 
 Environment:
   DIFFDECK_TOKEN        Project token (X-UI-Review-Token).
-  DIFFDECK_HOST         DiffDeck host URL.`;
+  DIFFDECK_HOST         DiffDeck host URL.
+  DIFFDECK_PRODUCT      Monorepo product key.`;
 
 const VIDEO_CONTENT_TYPES: Record<string, string> = {
     ".webm": "video/webm",
@@ -70,6 +73,7 @@ export async function runUploadRecording(parsed: ParsedArgs): Promise<number> {
     const metadata = stringOption(parsed.options, ["metadata"]);
     const branch = stringOption(parsed.options, ["branch", "b"]);
     const commitSha = stringOption(parsed.options, ["commit", "commit-sha", "commitSha", "c"]);
+    const product = productOption(parsed.options);
 
     if (!video) {
         console.error("Error: --video <file> is required.");
@@ -77,6 +81,10 @@ export async function runUploadRecording(parsed: ParsedArgs): Promise<number> {
     }
     if (!token) {
         console.error("Error: a project token is required (--token or $DIFFDECK_TOKEN).");
+        return 2;
+    }
+    if (product.error) {
+        console.error(`Error: ${product.error}`);
         return 2;
     }
     if (metadata) {
@@ -116,6 +124,7 @@ export async function runUploadRecording(parsed: ParsedArgs): Promise<number> {
             branch,
             commitSha,
             metadata,
+            product: product.key,
         },
         files: [
             {

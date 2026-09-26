@@ -25,7 +25,7 @@ import {promises as fsp, readFileSync, existsSync} from "node:fs";
 import path from "node:path";
 import {execFileSync} from "node:child_process";
 import {createRequire} from "node:module";
-import {boolOption, ParsedArgs, stringOption} from "../args";
+import {boolOption, ParsedArgs, productOption, stringOption} from "../args";
 import {AUTH_HEADER, buildUrl, DEFAULT_HOST, errorMessage, uploadMultipart, UploadFile} from "../http";
 import {createTarGz, countFiles} from "../tar";
 import {traceAffectedStories} from "../turbosnap";
@@ -69,6 +69,10 @@ Options:
                         PR baselines resolve against it.
   --pr-number <n>       Pull request number (from CI). Persisted server-side so the
                         build deep-links straight to the exact PR.
+  --product <key>       Monorepo product key (e.g. "web-app"). Splits one repo into
+                        independently reviewed products — each has its own baselines,
+                        build numbers and GitHub check. Defaults to $DIFFDECK_PRODUCT,
+                        else the repo's default product.
   --concurrency <n>     Parallel render workers (default: ~3× CPU count, capped 4–16). Alias: --jobs/-j.
   --locale <tag>        Browser locale (default: en-US). Fixes Intl throwing in locale-less CI.
   --timezone <tz>       Browser timezone (default: UTC). Alias: --tz.
@@ -99,7 +103,8 @@ Requires Playwright (with browsers) installed in the current project:
 
 Environment:
   DIFFDECK_TOKEN        Project token (X-UI-Review-Token).
-  DIFFDECK_HOST         DiffDeck host URL.`;
+  DIFFDECK_HOST         DiffDeck host URL.
+  DIFFDECK_PRODUCT      Monorepo product key.`;
 
 interface Story {
     id: string;
@@ -280,9 +285,12 @@ interface Baseline {
  * baseline) so we can `git diff <baselineSha>..HEAD`. Returns null on any
  * failure — the caller then falls back to a full render.
  */
-async function fetchBaseline(host: string, token: string, branch?: string): Promise<Baseline | null> {
+async function fetchBaseline(host: string, token: string, branch?: string, product?: string): Promise<Baseline | null> {
     try {
-        const qs = branch ? `?branch=${encodeURIComponent(branch)}` : "";
+        const params = new URLSearchParams();
+        if (branch) params.set("branch", branch);
+        if (product) params.set("product", product);
+        const qs = params.toString() ? `?${params.toString()}` : "";
         const res = await fetch(buildUrl(host, BASELINE_PATH) + qs, {headers: {[AUTH_HEADER]: token}});
         if (!res.ok) {
             console.error(`  (baseline lookup returned HTTP ${res.status}; rendering everything)`);
@@ -343,6 +351,7 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
     const commitMessage = stringOption(parsed.options, ["message", "commit-message", "m"]);
     const defaultBranch = stringOption(parsed.options, ["default-branch", "defaultBranch"]);
     const prNumber = stringOption(parsed.options, ["pr-number", "prNumber"]);
+    const product = productOption(parsed.options);
     // Rendering is largely idle-wait (navigation + settle), so we oversubscribe
     // cores: concurrent pages far exceed the core count profitably.
     const cpuCount = os.cpus()?.length || 4;
@@ -394,6 +403,10 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
         console.error("Error: --commit <sha> is required.");
         return 2;
     }
+    if (product.error) {
+        console.error(`Error: ${product.error}`);
+        return 2;
+    }
 
     const stories = enumerateStories(dir);
     console.error(`Found ${stories.length} story(ies) in ${dir}.`);
@@ -424,7 +437,7 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
             let baseSha = baseShaOpt || "";
             let baseNum: number | null = null;
             if (!baseSha) {
-                const baseline = await fetchBaseline(host, token!, branch);
+                const baseline = await fetchBaseline(host, token!, branch, product.key);
                 if (baseline?.commitSha) {
                     baseSha = baseline.commitSha;
                     baseNum = baseline.number ?? null;
@@ -660,6 +673,7 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
             commitMessage,
             defaultBranch,
             prNumber,
+            product: product.key,
             screenshots: JSON.stringify(manifest),
             // Incremental: tell the server the full story set so it can carry the
             // unrendered ones forward from the baseline by reference.
