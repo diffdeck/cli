@@ -1,6 +1,6 @@
 import {strict as assert} from "node:assert";
 import {test} from "node:test";
-import {boolOption, parseArgs, stringOption} from "./args";
+import {boolOption, parseArgs, productOption, stringOption} from "./args";
 
 test("parses --key value, --key=value and positionals", () => {
     const parsed = parseArgs(["upload-storybook", "--dir", "out", "--commit=abc123", "--help"], ["help"]);
@@ -32,4 +32,24 @@ test("boolOption detects presence across aliases", () => {
     assert.equal(boolOption({help: true}, ["help", "h"]), true);
     assert.equal(boolOption({h: true}, ["help", "h"]), true);
     assert.equal(boolOption({}, ["help", "h"]), false);
+});
+
+test("productOption reads --product / $DIFFDECK_PRODUCT, normalizes and validates", () => {
+    const prev = process.env.DIFFDECK_PRODUCT;
+    delete process.env.DIFFDECK_PRODUCT;
+    try {
+        assert.deepEqual(productOption({}), {});
+        assert.deepEqual(productOption({product: " My-App "}), {key: "my-app"});
+        assert.deepEqual(productOption({product: "web.admin_2"}), {key: "web.admin_2"});
+        assert.ok(productOption({product: "-bad"}).error);
+        assert.ok(productOption({product: "has space"}).error);
+        assert.ok(productOption({product: "x".repeat(65)}).error);
+
+        process.env.DIFFDECK_PRODUCT = "from-env";
+        assert.deepEqual(productOption({}), {key: "from-env"});
+        assert.deepEqual(productOption({product: "flag-wins"}), {key: "flag-wins"});
+    } finally {
+        if (prev === undefined) delete process.env.DIFFDECK_PRODUCT;
+        else process.env.DIFFDECK_PRODUCT = prev;
+    }
 });

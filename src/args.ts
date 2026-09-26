@@ -75,3 +75,29 @@ export function stringOption(
 export function boolOption(options: Record<string, string | boolean>, keys: string[]): boolean {
     return keys.some((key) => options[key] === true || options[key] === "true");
 }
+
+/**
+ * Monorepo product key: splits one repository into several independently-reviewed
+ * DiffDeck products (own baselines, build numbers and GitHub check). Lowercase
+ * letters, digits, `.`, `_` and `-`, starting with a letter or digit, max 64 chars.
+ * Must match the server's rule (src/shared/products/ui-review/productKeys.ts).
+ */
+export const PRODUCT_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/**
+ * Read `--product` / `$DIFFDECK_PRODUCT`. Returns `{key: undefined}` when unset (the
+ * server then uses the repo's default product), or `{error}` for an invalid key.
+ */
+export function productOption(options: Record<string, string | boolean>): {key?: string; error?: string} {
+    const raw = stringOption(options, ["product"], "DIFFDECK_PRODUCT");
+    const key = raw?.trim().toLowerCase();
+    if (!key) return {};
+    if (!PRODUCT_KEY_PATTERN.test(key)) {
+        return {
+            error:
+                `invalid product key "${raw}" — use lowercase letters, digits, ".", "_" or "-" ` +
+                `(starting with a letter or digit, max 64 chars).`,
+        };
+    }
+    return {key};
+}

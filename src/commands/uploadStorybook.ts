@@ -3,9 +3,9 @@
  * DiffDeck builds ingest route as multipart/form-data.
  *
  * Target: POST <host>/api/products/ui-review/builds
- * Fields: build (tarball), branch, commitSha, commitMessage.
+ * Fields: build (tarball), branch, commitSha, commitMessage, product.
  */
-import {boolOption, ParsedArgs, stringOption} from "../args";
+import {boolOption, ParsedArgs, productOption, stringOption} from "../args";
 import {DEFAULT_HOST, errorMessage, uploadMultipart} from "../http";
 import {countFiles, createTarGz} from "../tar";
 
@@ -25,13 +25,18 @@ Options:
                         PR baselines resolve against it.
   --pr-number <n>       Pull request number (from CI). Persisted server-side so the
                         build deep-links straight to the exact PR.
+  --product <key>       Monorepo product key (e.g. "web-app"). Splits one repo into
+                        independently reviewed products — each has its own baselines,
+                        build numbers and GitHub check. Defaults to $DIFFDECK_PRODUCT,
+                        else the repo's default product.
   --token <token>       Project token. Defaults to $DIFFDECK_TOKEN.
   --host <url>          DiffDeck host. Defaults to $DIFFDECK_HOST or ${DEFAULT_HOST}.
   --help                Show this help.
 
 Environment:
   DIFFDECK_TOKEN        Project token (X-UI-Review-Token).
-  DIFFDECK_HOST         DiffDeck host URL.`;
+  DIFFDECK_HOST         DiffDeck host URL.
+  DIFFDECK_PRODUCT      Monorepo product key.`;
 
 export async function runUploadStorybook(parsed: ParsedArgs): Promise<number> {
     if (boolOption(parsed.options, ["help", "h"])) {
@@ -47,6 +52,7 @@ export async function runUploadStorybook(parsed: ParsedArgs): Promise<number> {
     const commitMessage = stringOption(parsed.options, ["message", "commit-message", "m"]);
     const defaultBranch = stringOption(parsed.options, ["default-branch", "defaultBranch"]);
     const prNumber = stringOption(parsed.options, ["pr-number", "prNumber"]);
+    const product = productOption(parsed.options);
 
     if (!dir) {
         console.error("Error: --dir <storybook-static> is required.");
@@ -58,6 +64,10 @@ export async function runUploadStorybook(parsed: ParsedArgs): Promise<number> {
     }
     if (!commitSha) {
         console.error("Error: --commit <sha> is required.");
+        return 2;
+    }
+    if (product.error) {
+        console.error(`Error: ${product.error}`);
         return 2;
     }
 
@@ -77,7 +87,7 @@ export async function runUploadStorybook(parsed: ParsedArgs): Promise<number> {
         host,
         pathname: BUILDS_PATH,
         token,
-        fields: {branch, commitSha, commitMessage, defaultBranch, prNumber},
+        fields: {branch, commitSha, commitMessage, defaultBranch, prNumber, product: product.key},
         files: [
             {
                 field: "build",
