@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/diffdeck/cli/compare/v1.6.0...v1.7.0) (2026-09-26)
+
+
+### Features
+
+* --product flag for monorepo products ([#17](https://github.com/diffdeck/cli/issues/17)) ([fcdeb13](https://github.com/diffdeck/cli/commit/fcdeb1309115ac1f92531ba3c36919dbca658f79))
+
 ## [1.6.0](https://github.com/diffdeck/cli/compare/v1.5.2...v1.6.0) (2026-08-08)
 
 
