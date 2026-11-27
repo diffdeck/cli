@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/diffdeck/cli/compare/v1.7.0...v1.8.0) (2026-11-27)
+
+
+### Features
+
+* support cached dependency tracing for Storybook screenshots ([#20](https://github.com/diffdeck/cli/issues/20)) ([7d1c807](https://github.com/diffdeck/cli/commit/7d1c80784298a50677f3de0e79ab46d0d1432df4))
+
 ## [1.7.0](https://github.com/diffdeck/cli/compare/v1.6.0...v1.7.0) (2026-09-26)
 
 
