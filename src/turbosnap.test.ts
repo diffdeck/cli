@@ -147,3 +147,20 @@ test("extraGlobalPatterns forces a full render for an otherwise-traceable path",
     });
     assert.equal(r.full, true);
 });
+
+test("metadata-only npm changes preserve source tracing and explicit global rules", () => {
+    const opts = {statsPath: writeStats(), changedFiles: ["package-lock.json", "src/Card.tsx"],
+        metadataPaths: new Set(["package-lock.json"]), stories: STORIES};
+    assert.deepEqual(traceAffectedStories(opts).affectedStoryIds, ["card--default"]);
+    assert.ok(traceAffectedStories({...opts, extraGlobalPatterns: [/package-lock/]}).full);
+});
+
+test("broad fan-out stops the walk while a shared preview import forces all variants", () => {
+    const statsPath = writeStats();
+    assert.ok(traceAffectedStories({statsPath, changedFiles: ["src/Button.tsx"],
+        stories: Array.from({length: 100}, (_, i) => ({...STORIES[i % 2], id: String(i)}))}).full);
+    writeFileSync(statsPath, JSON.stringify({modules: [
+        {name: "./src/theme.ts", reasons: [{moduleName: "./.storybook/preview.tsx"}]},
+    ]}));
+    assert.match(traceAffectedStories({statsPath, changedFiles: ["src/theme.ts"], stories: STORIES}).reason, /shared preview/);
+});

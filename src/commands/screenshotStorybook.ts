@@ -28,6 +28,8 @@ import {createRequire} from "node:module";
 import {boolOption, ParsedArgs, productOption, stringOption} from "../args";
 import {AUTH_HEADER, buildUrl, DEFAULT_HOST, errorMessage, uploadMultipart, UploadFile} from "../http";
 import {createTarGz, countFiles} from "../tar";
+import {AssetHashes, cacheFile, carryGroups, compare, Group, matchingSnapshot, recordRequest, Snapshot} from "../browserTrace";
+import {metadataOnly} from "../npmMetadata";
 import {traceAffectedStories} from "../turbosnap";
 
 export const BUILDS_PATH = "/api/products/ui-review/builds";
@@ -81,6 +83,8 @@ Options:
   --host <url>          DiffDeck host. Defaults to $DIFFDECK_HOST or ${DEFAULT_HOST}.
   --full                Force a full render (skip incremental/TurboSnap scoping).
   --stats <path>        Webpack stats for incremental scoping (default: <dir>/preview-stats.json).
+  --trace-cache <dir>   Cache browser request traces by successful DiffDeck build ID.
+                        Reuse this directory between builds for lockfile comparisons.
   --global <res>        Comma-separated regexes of extra paths that force a full render
                         (in addition to the built-in globals: lockfiles, .storybook/, …).
   --global-exclude <res> Comma-separated regexes of paths to EXEMPT from the global rule,
@@ -329,11 +333,10 @@ function gitChangedFiles(baselineSha: string): string[] | null {
         run(["fetch", "--depth=1", "origin", baselineSha]);
         if (!hasCommit()) return null;
     }
-    const out = run(["diff", "--name-only", `${baselineSha}..HEAD`]);
+    const out = run(["diff", "--no-renames", "--name-only", "-z", `${baselineSha}..HEAD`]);
     if (out === null) return null;
     return out
-        .split("\n")
-        .map((l) => l.trim())
+        .split("\0")
         .filter(Boolean);
 }
 
@@ -420,6 +423,13 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
         return 2;
     }
 
+    const cache = stringOption(parsed.options, ["trace-cache"]);
+    const assets = new AssetHashes(dir);
+    const groups: Group[] = [];
+    let previous: Snapshot | undefined;
+    const settings = cache ? JSON.stringify([locale, timezone, settleMs, DEVICE_VIEWPORTS, THEMES,
+        process.platform, process.arch, chromium.executablePath(),
+        createRequire(path.resolve("package.json"))("playwright/package.json").version, require("../../package.json").version]) : "";
     // Incremental (TurboSnap) scoping: figure out which stories to actually render.
     // Falls back to rendering everything whenever we can't safely scope.
     let renderStories = stories;
@@ -436,10 +446,12 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
         } else {
             let baseSha = baseShaOpt || "";
             let baseNum: number | null = null;
+            let baselineId: string | undefined;
             if (!baseSha) {
                 const baseline = await fetchBaseline(host, token!, branch, product.key);
                 if (baseline?.commitSha) {
                     baseSha = baseline.commitSha;
+                    baselineId = baseline.buildId;
                     baseNum = baseline.number ?? null;
                 }
             }
@@ -453,19 +465,54 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
                             "(commit not fetchable — check out with fetch-depth: 0 to enable incremental rendering).",
                     );
                 } else {
-                    const trace = traceAffectedStories({
+                    const traceOptions = {
+                        metadataPaths: cache ? metadataOnly(baseSha, changed) : undefined,
                         statsPath,
                         changedFiles: changed,
                         stories: stories.map((s) => ({id: s.id, importPath: s.importPath})),
                         extraGlobalPatterns,
                         globalExcludePatterns,
-                    });
+                    };
+                    let trace = traceAffectedStories(traceOptions);
+                    // A bundle graph cannot see build-time transforms, removed modules or
+                    // fetches of static assets. Compare the baseline browser inputs as well.
+                    const lockPath = /(^|\/)(package(-lock)?\.json|yarn\.lock|pnpm-lock\.yaml)$/;
+                    const unknownInput = changed.some(f => !existsSync(f) || /(^|\/)(public|static)\//.test(f) ||
+                        /\.(png|jpe?g|webp|avif|svg|gif|ico|woff2?|ttf|otf|css)$/i.test(f));
+                    const lockFallback = trace.full && changed.some(f =>
+                        lockPath.test(f) && trace.reason === `global file changed: ${f}`);
+                    if (cache && baselineId) {
+                        try {
+                            const data: Snapshot = JSON.parse(await fsp.readFile(cacheFile(cache, host, baselineId), "utf8"));
+                            if (matchingSnapshot(data, settings)) previous = data;
+                        } catch { /* New, evicted or legacy build. */ }
+                    }
+                    if (cache && !previous) {
+                        trace = {full: true, affectedStoryIds: [], reason: "no matching baseline browser trace"};
+                    } else if (previous && (lockFallback || unknownInput) && !changed.some(f => extraGlobalPatterns.some(re => re.test(f)))) {
+                        const start = Date.now();
+                        try {
+                            if (lockFallback) {
+                                trace = traceAffectedStories({...traceOptions, metadataPaths: new Set(changed.filter(f => lockPath.test(f)))});
+                            }
+                            const ids = stories.map(s => s.id);
+                            const affected = await compare(previous, settings, ids, assets);
+                            if (!trace.full) {
+                                const selected = new Set([...affected, ...trace.affectedStoryIds]);
+                                trace = {full: false, affectedStoryIds: [...selected], reason: "browser resource trace"};
+                            }
+                            console.error(`Browser trace: ${affected.length}/${ids.length} stories with changed or unknown inputs (${Date.now() - start}ms).`);
+                        } catch (e: any) {
+                            trace = {full: true, affectedStoryIds: [], reason: `browser trace: ${e.code || e.message}`};
+                        }
+                    }
                     if (trace.full) {
                         console.error(`Full render: ${trace.reason}.`);
                     } else {
                         const affected = new Set(trace.affectedStoryIds);
                         // Stories with no importPath can't be traced — render them to be safe.
-                        renderStories = stories.filter((s) => affected.has(s.id) || !s.importPath);
+                        const observed = previous && new Set(previous.groups.flatMap(g => g.ids));
+                        renderStories = stories.filter(s => affected.has(s.id) || !s.importPath || (observed && !observed.has(s.id)));
                         incremental = true;
                         const at = baseNum != null ? ` baseline #${baseNum},` : "";
                         console.error(
@@ -535,7 +582,7 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
     const site = await serveDir(dir);
     let browser: any;
     try {
-        browser = await chromium.launch({headless: true});
+        if (chunks.length) browser = await chromium.launch({headless: true});
         let nextChunk = 0;
         const worker = async (): Promise<void> => {
             for (;;) {
@@ -551,6 +598,11 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
                     colorScheme: chunk.theme,
                 });
                 let currentErrors: string[] = [];
+                const resources = new Set<string>();
+                let external = false;
+                if (cache) context.on("request", (req: any) => {
+                    if (!recordRequest(req.url(), site.origin, resources)) external = true;
+                });
                 const page = await context.newPage();
                 page.on("pageerror", (e: any) => currentErrors.push("pageerror: " + String(e?.message || e).split("\n")[0]));
                 page.on("console", (m: any) => {
@@ -607,6 +659,7 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
                     }
                 } finally {
                     await context.close().catch(() => {});
+                    if (cache) groups.push({ids: chunk.stories.map(s => s.id), paths: [...resources], external});
                 }
             }
         };
@@ -691,5 +744,23 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
     console.log(`Build uploaded${number != null ? ` (#${number})` : ""}.`);
     if (buildId) console.log(`  buildId: ${buildId}`);
     if (url) console.log(`  view:    ${url}`);
+    if (cache && buildId) {
+        try {
+            for (const group of groups) for (const resource of group.paths) await assets.get(resource);
+            if (previous && incremental) {
+                const skipped = new Set(stories.map(s => s.id));
+                for (const s of renderStories) skipped.delete(s.id);
+                groups.push(...carryGroups(previous, skipped, assets.values));
+            }
+            const snapshot: Snapshot = {version: 1, settings, groups, hashes: assets.values};
+            await fsp.mkdir(cache, {recursive: true});
+            const file = cacheFile(cache, host, String(buildId));
+            const temp = file + "." + process.pid;
+            await fsp.writeFile(temp, JSON.stringify(snapshot));
+            await fsp.rename(temp, file);
+        } catch (e: any) {
+            console.error(`Browser trace cache write skipped: ${e.message}`);
+        }
+    }
     return 0;
 }

@@ -10,7 +10,7 @@
  * `{full: true}` (no stats, a global/untraced file changed, or the graph can't be
  * trusted).
  */
-import {readFileSync} from "node:fs";
+import {readFileSync, statSync} from "node:fs";
 
 interface StatsReason {
     moduleName?: string;
@@ -19,6 +19,10 @@ interface StatsReason {
 interface StatsModule {
     name?: string;
     identifier?: string;
+    children?: StatsModule[];
+    filteredModules?: number;
+    filteredChildren?: number;
+    filteredReasons?: number;
     reasons?: StatsReason[];
     modules?: StatsModule[]; // concatenated (ModuleConcatenationPlugin) children
 }
@@ -78,6 +82,7 @@ export interface TraceResult {
  *        file can't be found in the bundle graph (see below).
  */
 export function traceAffectedStories(opts: {
+    metadataPaths?: Set<string>;
     statsPath: string;
     changedFiles: string[];
     stories: {id: string; importPath: string}[];
@@ -99,13 +104,16 @@ export function traceAffectedStories(opts: {
     // shouldn't nuke the whole render.
     const matchesGlobal = (f: string) => globals.some((re) => re.test(f));
     const isExcluded = (f: string) => excludes.some((re) => re.test(f));
-    const globalHit = changed.find((f) => matchesGlobal(f) && !isExcluded(f));
+    const globalHit = changed.find((f) => matchesGlobal(f) && !isExcluded(f) && (!opts.metadataPaths?.has(f) || opts.extraGlobalPatterns?.some(re => re.test(f))));
     if (globalHit) {
         return {full: true, affectedStoryIds: [], reason: `global file changed: ${globalHit}`};
     }
 
-    let stats: {modules?: StatsModule[]};
+    let stats: {modules?: StatsModule[]; filteredModules?: number};
     try {
+        if (statSync(opts.statsPath).size > 256 * 1024 * 1024) {
+            return {full: true, affectedStoryIds: [], reason: "webpack stats exceed 256 MiB"};
+        }
         stats = JSON.parse(readFileSync(opts.statsPath, "utf8"));
     } catch (e: any) {
         return {full: true, affectedStoryIds: [], reason: `could not read stats: ${e?.message ?? e}`};
@@ -127,28 +135,26 @@ export function traceAffectedStories(opts: {
         if (!set) dependents.set(imported, (set = new Set()));
         set.add(importer);
     };
-    const indexModule = (m: StatsModule) => {
+    let incomplete = Boolean(stats.filteredModules);
+    let edges = 0;
+    const indexModule = (m: StatsModule, parent = "") => {
+        if (incomplete) return;
+        if (m.filteredModules || m.filteredChildren || m.filteredReasons) incomplete = true;
         const name = m.name ? normalizeModuleName(m.name) : "";
         if (name) known.add(name);
+        if (parent && name && parent !== name) {
+            addEdge(parent, name);
+            addEdge(name, parent);
+        }
         for (const r of m.reasons ?? []) {
+            if (++edges > 2_000_000) { incomplete = true; return; }
             if (r.moduleName) addEdge(normalizeModuleName(r.moduleName), name);
         }
-        for (const child of m.modules ?? []) {
-            const cn = child.name ? normalizeModuleName(child.name) : "";
-            if (cn) {
-                known.add(cn);
-                // A child of a concatenated module shares that module's fate.
-                if (name && cn !== name) {
-                    addEdge(cn, name);
-                    addEdge(name, cn);
-                }
-            }
-            for (const r of child.reasons ?? []) {
-                if (r.moduleName) addEdge(normalizeModuleName(r.moduleName), cn || name);
-            }
-        }
+        for (const child of m.modules ?? []) indexModule(child, name);
+        for (const child of m.children ?? []) indexModule(child, parent);
     };
     for (const m of modules) indexModule(m);
+    if (incomplete) return {full: true, affectedStoryIds: [], reason: "incomplete or oversized webpack graph"};
 
     // Safety net for global-excludes: a file that WOULD be global but was excused
     // (so it could be traced) yet ISN'T in the bundle graph can't be scoped — it
@@ -169,10 +175,23 @@ export function traceAffectedStories(opts: {
     const seeds = changed.filter((f) => known.has(f));
 
     // BFS over dependents to collect every affected module name.
+    const storyCounts = new Map<string, number>();
+    for (const story of opts.stories) {
+        const file = normalizeGitPath(story.importPath);
+        storyCounts.set(file, (storyCounts.get(file) ?? 0) + 1);
+    }
+    let hits = 0;
     const affected = new Set<string>(seeds);
-    const queue = [...seeds];
-    while (queue.length) {
-        const cur = queue.shift()!;
+    const queue = [...affected];
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+        const cur = queue[cursor];
+        hits += storyCounts.get(cur) ?? 0;
+        if (opts.stories.length >= 20 && hits >= opts.stories.length * 0.9) {
+            return {full: true, affectedStoryIds: [], reason: "at least 90% of stories affected"};
+        }
+        if (/(^|\/)\.storybook\/preview\.[cm]?[jt]sx?$/.test(cur)) {
+            return {full: true, affectedStoryIds: [], reason: "shared preview dependency changed"};
+        }
         for (const dep of dependents.get(cur) ?? []) {
             if (!affected.has(dep)) {
                 affected.add(dep);
@@ -185,7 +204,7 @@ export function traceAffectedStories(opts: {
     const affectedStoryIds: string[] = [];
     for (const story of opts.stories) {
         const sp = normalizeGitPath(story.importPath);
-        if (affected.has(sp)) affectedStoryIds.push(story.id);
+        if (!known.has(sp) || affected.has(sp)) affectedStoryIds.push(story.id);
     }
 
     return {

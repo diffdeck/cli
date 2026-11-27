@@ -241,3 +241,11 @@ node dist/cli.js --help
 ## License
 
 [MIT](./LICENSE)
+
+### Browser tracing for dependency changes
+
+Pass `--trace-cache <directory>` to `screenshot-storybook` and persist that directory across CI runs. The CLI keys traces by DiffDeck host and successful build ID. The first run against a baseline without a matching trace renders every story. Cache entries can be evicted at any time.
+
+For source edits the CLI follows Webpack importers back to story files. For a dependency update, deleted input or changed public asset, it can also compare the actual local files Chromium requested in the baseline with the new build, including generated scripts, stylesheets, fonts and previously missing assets. Each render worker reuses a page, so every story in a worker chunk shares that chunk’s observed resources. An external resource makes the whole chunk eligible for capture during that comparison. Changing shared preview output can therefore still render the entire package.
+
+With npm v3 lockfiles, changes limited to workspace dependency declarations and dev-only markers can use the source graph directly when the installed entries are identical. Explicit global rules still apply. A trace stops at 90% coverage for packages with at least 20 stories, two million importer reasons, or 512 MiB of resource reads per build. Use `--full` to force a fresh capture.
