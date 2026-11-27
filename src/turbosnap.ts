@@ -113,8 +113,9 @@ export function readSourceGraph(statsPath: string): SourceGraph | TraceResult {
         if (name) known.add(name);
         if (m.type === "module" && !Array.isArray(m.reasons)) incomplete = true;
         if (parent && name && parent !== name) {
+            // A changed child affects the concatenated module and its importers.
+            // The parent does not become an input to all of its children.
             addEdge(parent, name);
-            addEdge(name, parent);
         }
         for (const r of m.reasons ?? []) {
             if (++edges > 2_000_000) { incomplete = true; return; }
