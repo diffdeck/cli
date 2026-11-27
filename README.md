@@ -102,6 +102,7 @@ diffdeck screenshot-storybook --dir storybook-static \
 | Flag | Description |
 | --- | --- |
 | `--dir <path>` | Directory of the built Storybook (e.g. `storybook-static`). **Required.** |
+| `--trace-cache <directory>` | Persist dependency graphs and browser traces for incremental captures. See [browser tracing](#browser-tracing-for-dependency-changes). |
 | `--commit <sha>` | Git commit SHA. **Required.** |
 | `--branch <name>` | Git branch name. Defaults to the repo's default branch server-side. |
 | `--message <text>` | Git commit message. Optional. |
