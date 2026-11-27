@@ -3,7 +3,7 @@ import {test} from "node:test";
 import {writeFileSync, mkdtempSync} from "node:fs";
 import {tmpdir} from "node:os";
 import path from "node:path";
-import {normalizeModuleName, traceAffectedStories} from "./turbosnap";
+import {normalizeModuleName, readSourceGraph, traceAffectedStories} from "./turbosnap";
 
 test("normalizeModuleName strips loaders, concat suffix, query/hash and ./", () => {
     assert.equal(normalizeModuleName("./src/Button.tsx"), "src/Button.tsx");
@@ -146,4 +146,77 @@ test("extraGlobalPatterns forces a full render for an otherwise-traceable path",
         extraGlobalPatterns: [/(^|\/)stories\//],
     });
     assert.equal(r.full, true);
+});
+
+test("metadata-only npm changes preserve source tracing and explicit global rules", () => {
+    const opts = {statsPath: writeStats(), changedFiles: ["package-lock.json", "src/Card.tsx"],
+        metadataPaths: new Set(["package-lock.json"]), stories: STORIES};
+    assert.deepEqual(traceAffectedStories(opts).affectedStoryIds, ["card--default"]);
+    assert.ok(traceAffectedStories({...opts, extraGlobalPatterns: [/package-lock/]}).full);
+});
+
+test("broad fan-out stops the walk while a shared preview import forces all variants", () => {
+    const statsPath = writeStats();
+    assert.ok(traceAffectedStories({statsPath, changedFiles: ["src/Button.tsx"],
+        stories: Array.from({length: 100}, (_, i) => ({...STORIES[i % 2], id: String(i)}))}).full);
+    writeFileSync(statsPath, JSON.stringify({modules: [
+        {name: "./src/theme.ts", reasons: [{moduleName: "./.storybook/preview.tsx"}]},
+    ]}));
+    assert.match(traceAffectedStories({statsPath, changedFiles: ["src/theme.ts"], stories: STORIES}).reason, /shared preview/);
+});
+
+test("persisted source graph traces a removed input and ignores unreachable code", () => {
+    const statsPath = writeStats();
+    const graph = readSourceGraph(statsPath);
+    assert.ok("importers" in graph);
+    const cached = JSON.parse(JSON.stringify(graph));
+    const opts = {statsPath: "/baseline/stats/removed", graph: cached, stories: STORIES};
+    assert.deepEqual(traceAffectedStories({...opts, changedFiles: ["src/Card.tsx"]}).affectedStoryIds, ["card--default"]);
+    const noStories = traceAffectedStories({...opts, changedFiles: ["server/unrelated.ts"]});
+    assert.equal(noStories.full, false);
+    assert.deepEqual(noStories.affectedStoryIds, []);
+});
+
+test("Webpack's collapsed runtime helpers permit tracing while missing source edges force a full render", () => {
+    const statsPath = writeStats();
+    const modules = [{type: "module", name: "./stories/Card.stories.tsx", reasons: []}];
+    writeFileSync(statsPath, JSON.stringify({modules: [{moduleType: "runtime", filteredChildren: 6}, ...modules]}));
+    assert.ok("importers" in readSourceGraph(statsPath));
+    writeFileSync(statsPath, JSON.stringify({modules: [{type: "module", name: "./src/Card.tsx"}]}));
+    assert.ok("full" in readSourceGraph(statsPath));
+});
+
+test("concatenated story entries do not propagate a leaf change back into shared libraries", () => {
+    const statsPath = writeStats();
+    const stories = Array.from({length: 20}, (_, i) => ({id: `s${i}`, importPath: `./s${i}.stories.js`}));
+    const modules = stories.map(({importPath}, i) => ({
+        name: `${importPath} + 2 modules`, reasons: [],
+        modules: [
+            {name: importPath, reasons: []},
+            {name: "./shared.js", reasons: [{moduleName: importPath}]},
+            {name: i < 2 ? "./leaf.js" : `./private${i}.js`, reasons: [{moduleName: importPath}]},
+        ],
+    }));
+    writeFileSync(statsPath, JSON.stringify({modules}));
+    const leaf = traceAffectedStories({statsPath, stories, changedFiles: ["leaf.js"]});
+    assert.equal(leaf.full, false);
+    assert.deepEqual(leaf.affectedStoryIds, ["s0", "s1"]);
+    assert.match(traceAffectedStories({statsPath, stories, changedFiles: ["shared.js"]}).reason, /90%/);
+});
+
+test("a deep graph with cycles and converging imports selects each reachable story once", () => {
+    const importers: Record<string, string[]> = Object.create(null);
+    for (let i = 0; i < 2000; i++) importers[`module${i}`] = [`module${i + 1}`];
+    importers.module1999.push("module1000");
+    importers.module2000 = ["componentA", "componentB"];
+    importers.componentA = ["story0", "story1"];
+    importers.componentB = ["story1", "story2"];
+    const stories = Array.from({length: 600}, (_, i) => {
+        const id = `story${i}`;
+        importers[id] = [];
+        return {id, importPath: id};
+    });
+    const result = traceAffectedStories({graph: {importers}, statsPath: "", stories, changedFiles: ["module0", "module500"]});
+    assert.equal(result.full, false);
+    assert.deepEqual(result.affectedStoryIds, ["story0", "story1", "story2"]);
 });

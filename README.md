@@ -238,6 +238,39 @@ npm test            # build + node --test
 node dist/cli.js --help
 ```
 
+## Browser tracing for dependency changes
+
+Pass `--trace-cache <directory>` to `screenshot-storybook` and persist that directory across CI runs. The CLI keys traces by DiffDeck host and successful build ID. The first run against a baseline without a matching trace renders every story. Cache entries can be evicted at any time.
+
+For source edits the CLI caches each successful build’s Webpack importer graph and story paths. It traces the Git changes through both the baseline and current graphs, including dependencies that were deleted or renamed. A change outside both graphs can carry every story forward with zero screenshots. For candidate stories, identical observed browser inputs can also eliminate captures after compilation removes comments or types. For a dependency update, deleted input or changed public asset, it can also compare the actual local files Chromium requested in the baseline with the new build, including generated scripts, stylesheets, fonts and previously missing assets. Each render worker reuses a page, so every story in a worker chunk shares that chunk’s observed resources. An external resource makes the whole chunk eligible for capture during that comparison. Changing shared preview output can therefore still render the entire package.
+
+With npm v3 lockfiles, changes limited to workspace dependency declarations and dev-only markers can use the source graph directly when the installed entries are identical. Explicit global rules still apply. A trace stops at 90% coverage for packages with at least 20 stories, two million importer reasons, or 512 MiB of resource reads per build. Use `--full` to force a fresh capture.
+
+### Persist traces on GitHub-hosted runners
+
+Add these steps to the job that publishes your Storybook, after building it with `--webpack-stats-json` and installing Chromium. Pass the cache directory to your existing capture command, keeping any product and pull request options you already use.
+
+```yaml
+- name: Restore DiffDeck traces
+  uses: actions/cache@v6
+  with:
+    path: ${{ runner.temp }}/diffdeck-traces
+    key: diffdeck-traces-v1-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+    restore-keys: |
+      diffdeck-traces-v1-${{ runner.os }}-
+
+- name: Capture and publish Storybook
+  env:
+    DIFFDECK_TOKEN: ${{ secrets.DIFFDECK_TOKEN }}
+    DIFFDECK_BRANCH: ${{ github.head_ref || github.ref_name }}
+  run: |
+    npx @diffdeckai/cli screenshot-storybook \
+      --dir storybook-static --commit "$GITHUB_SHA" --branch "$DIFFDECK_BRANCH" \
+      --trace-cache "$RUNNER_TEMP/diffdeck-traces"
+```
+
+The restore prefix picks up the latest accessible archive. Each run attempt gets a fresh key so GitHub can save new traces when the job succeeds, even if the lockfile stayed the same. For parallel matrix jobs, include the matrix product in both the key and restore prefix so each job saves its own archive. [GitHub Actions cache reference](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
+
 ## License
 
 [MIT](./LICENSE)
