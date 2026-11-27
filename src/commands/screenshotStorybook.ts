@@ -30,7 +30,7 @@ import {AUTH_HEADER, buildUrl, DEFAULT_HOST, errorMessage, uploadMultipart, Uplo
 import {createTarGz, countFiles} from "../tar";
 import {AssetHashes, cacheFile, carryGroups, compare, Group, matchingSnapshot, recordRequest, Snapshot} from "../browserTrace";
 import {metadataOnly} from "../npmMetadata";
-import {traceAffectedStories} from "../turbosnap";
+import {readSourceGraph, traceAffectedStories} from "../turbosnap";
 
 export const BUILDS_PATH = "/api/products/ui-review/builds";
 export const BASELINE_PATH = "/api/products/ui-review/builds/baseline";
@@ -434,10 +434,11 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
     // Falls back to rendering everything whenever we can't safely scope.
     let renderStories = stories;
     let incremental = false;
+    const statsPath = statsPathOpt || path.join(dir, "preview-stats.json");
+    const graph = cache ? readSourceGraph(statsPath) : undefined;
     if (forceFull) {
         console.error("Full render: --full requested.");
     } else {
-        const statsPath = statsPathOpt || path.join(dir, "preview-stats.json");
         if (!existsSync(statsPath)) {
             console.error(
                 `Full render: no ${path.basename(statsPath)} ` +
@@ -467,7 +468,7 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
                 } else {
                     const traceOptions = {
                         metadataPaths: cache ? metadataOnly(baseSha, changed) : undefined,
-                        statsPath,
+                        graph, statsPath,
                         changedFiles: changed,
                         stories: stories.map((s) => ({id: s.id, importPath: s.importPath})),
                         extraGlobalPatterns,
@@ -477,7 +478,8 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
                     // A bundle graph cannot see build-time transforms, removed modules or
                     // fetches of static assets. Compare the baseline browser inputs as well.
                     const lockPath = /(^|\/)(package(-lock)?\.json|yarn\.lock|pnpm-lock\.yaml)$/;
-                    const unknownInput = changed.some(f => !existsSync(f) || /(^|\/)(public|static)\//.test(f) ||
+                    const removedSource = changed.filter(f => !existsSync(f) && /\.[cm]?[jt]sx?$/i.test(f));
+                    const unknownInput = changed.some(f => (!existsSync(f) && !/\.[cm]?[jt]sx?$/i.test(f)) || /(^|\/)(public|static)\//.test(f) ||
                         /\.(png|jpe?g|webp|avif|svg|gif|ico|woff2?|ttf|otf|css)$/i.test(f));
                     const lockFallback = trace.full && changed.some(f =>
                         lockPath.test(f) && trace.reason === `global file changed: ${f}`);
@@ -489,7 +491,7 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
                     }
                     if (cache && !previous) {
                         trace = {full: true, affectedStoryIds: [], reason: "no matching baseline browser trace"};
-                    } else if (previous && (lockFallback || unknownInput) && !changed.some(f => extraGlobalPatterns.some(re => re.test(f)))) {
+                    } else if (previous && (lockFallback || unknownInput || (removedSource.length > 0 && !previous.source)) && !changed.some(f => extraGlobalPatterns.some(re => re.test(f)))) {
                         const start = Date.now();
                         try {
                             if (lockFallback) {
@@ -504,6 +506,29 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
                             console.error(`Browser trace: ${affected.length}/${ids.length} stories with changed or unknown inputs (${Date.now() - start}ms).`);
                         } catch (e: any) {
                             trace = {full: true, affectedStoryIds: [], reason: `browser trace: ${e.code || e.message}`};
+                        }
+                    }
+                    const baselineSource = previous?.source;
+                    if (!trace.full && baselineSource) {
+                        const oldTrace = traceAffectedStories({...traceOptions, graph: baselineSource.graph,
+                            stories: baselineSource.stories,
+                            // Lockfile/config decisions already ran against the current build. Trace
+                            // actual code paths on both sides, including deleted and renamed inputs.
+                            changedFiles: changed.filter(f => /\.[cm]?[jt]sx?$/i.test(f) || Object.hasOwn(baselineSource.graph.importers, f)),
+                        });
+                        if (oldTrace.full) trace = oldTrace;
+                        else trace.affectedStoryIds.push(...oldTrace.affectedStoryIds);
+                    }
+                    // A production build may erase an edit (types, comments, unused
+                    // code). Check only the candidate stories, and keep them all if
+                    // their baseline inputs cannot be compared within budget.
+                    if (previous && !trace.full && !lockFallback && !unknownInput && trace.affectedStoryIds.length) {
+                        const candidates = [...new Set(trace.affectedStoryIds)];
+                        try {
+                            trace.affectedStoryIds = await compare(previous, settings, candidates, assets);
+                            console.error(`Source trace: ${candidates.length} candidate stories, ${trace.affectedStoryIds.length} with changed or unknown browser inputs.`);
+                        } catch (e: any) {
+                            console.error(`Keeping source trace candidates: ${e.message}.`);
                         }
                     }
                     if (trace.full) {
@@ -545,7 +570,7 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
 
     const total = renderStories.length * lanes.length;
     const t0 = Date.now();
-    const workerCount = Math.max(1, Math.min(concurrency, chunks.length || 1));
+    const workerCount = Math.min(concurrency, chunks.length);
     console.error(
         `Rendering ${total} variant(s) — ${renderStories.length} story(ies) × ${THEMES.length} theme(s) × ${DEVICES.length} device(s) — ` +
             `with ${workerCount} parallel worker(s), in-page switching...`,
@@ -752,7 +777,8 @@ export async function runScreenshotStorybook(parsed: ParsedArgs): Promise<number
                 for (const s of renderStories) skipped.delete(s.id);
                 groups.push(...carryGroups(previous, skipped, assets.values));
             }
-            const snapshot: Snapshot = {version: 1, settings, groups, hashes: assets.values};
+            const source = graph && !("full" in graph) ? {graph, stories: stories.map(({id, importPath}) => ({id, importPath}))} : undefined;
+            const snapshot: Snapshot = {version: 1, source, settings, groups, hashes: assets.values};
             await fsp.mkdir(cache, {recursive: true});
             const file = cacheFile(cache, host, String(buildId));
             const temp = file + "." + process.pid;

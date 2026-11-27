@@ -17,6 +17,8 @@ interface StatsReason {
     moduleIdentifier?: string;
 }
 interface StatsModule {
+    type?: string;
+    moduleType?: string;
     name?: string;
     identifier?: string;
     children?: StatsModule[];
@@ -69,6 +71,67 @@ export interface TraceResult {
     reason: string;
 }
 
+export interface SourceGraph {
+    importers: Record<string, string[]>;
+}
+
+export function readSourceGraph(statsPath: string): SourceGraph | TraceResult {
+    let stats: {modules?: StatsModule[]; filteredModules?: number};
+    try {
+        if (statSync(statsPath).size > 256 * 1024 * 1024) {
+            return {full: true, affectedStoryIds: [], reason: "webpack stats exceed 256 MiB"};
+        }
+        stats = JSON.parse(readFileSync(statsPath, "utf8"));
+    } catch (e: any) {
+        return {full: true, affectedStoryIds: [], reason: `could not read stats: ${e?.message ?? e}`};
+    }
+    const modules = stats.modules ?? [];
+    if (modules.length === 0) {
+        return {full: true, affectedStoryIds: [], reason: "empty/invalid stats"};
+    }
+
+    // Reverse dependency graph over normalised module names: dependents[X] = the
+    // set of modules that import X. Include concatenated children so an edge into a
+    // merged module resolves. Because content-hashed builds cascade, walking
+    // importers from a changed module reaches every module whose output depends on it.
+    const dependents = new Map<string, Set<string>>();
+    const known = new Set<string>();
+    const addEdge = (importer: string, imported: string) => {
+        if (!importer || !imported) return;
+        let set = dependents.get(imported);
+        if (!set) dependents.set(imported, (set = new Set()));
+        set.add(importer);
+    };
+    let incomplete = Boolean(stats.filteredModules);
+    let edges = 0;
+    const indexModule = (m: StatsModule, parent = "") => {
+        // Webpack collapses its generated runtime helpers even in ordinary complete
+        // source stats. They have no repository source paths to trace.
+        if (incomplete || m.moduleType === "runtime") return;
+        if (m.filteredModules || m.filteredChildren || m.filteredReasons) incomplete = true;
+        const name = m.name ? normalizeModuleName(m.name) : "";
+        if (name) known.add(name);
+        if (m.type === "module" && !Array.isArray(m.reasons)) incomplete = true;
+        if (parent && name && parent !== name) {
+            addEdge(parent, name);
+            addEdge(name, parent);
+        }
+        for (const r of m.reasons ?? []) {
+            if (++edges > 2_000_000) { incomplete = true; return; }
+            if (r.moduleName) addEdge(normalizeModuleName(r.moduleName), name);
+        }
+        for (const child of m.modules ?? []) indexModule(child, name);
+        for (const child of m.children ?? []) indexModule(child, parent);
+    };
+    for (const m of modules) indexModule(m);
+    if (incomplete) return {full: true, affectedStoryIds: [], reason: "incomplete or oversized webpack graph"};
+
+    const importers: Record<string, string[]> = Object.create(null);
+    for (const file of known) importers[file] = [];
+    for (const [file, parents] of dependents) importers[file] = [...parents];
+    return {importers};
+}
+
 /**
  * Trace which stories are affected by `changedFiles`.
  *
@@ -83,6 +146,7 @@ export interface TraceResult {
  */
 export function traceAffectedStories(opts: {
     metadataPaths?: Set<string>;
+    graph?: SourceGraph | TraceResult;
     statsPath: string;
     changedFiles: string[];
     stories: {id: string; importPath: string}[];
@@ -109,59 +173,16 @@ export function traceAffectedStories(opts: {
         return {full: true, affectedStoryIds: [], reason: `global file changed: ${globalHit}`};
     }
 
-    let stats: {modules?: StatsModule[]; filteredModules?: number};
-    try {
-        if (statSync(opts.statsPath).size > 256 * 1024 * 1024) {
-            return {full: true, affectedStoryIds: [], reason: "webpack stats exceed 256 MiB"};
-        }
-        stats = JSON.parse(readFileSync(opts.statsPath, "utf8"));
-    } catch (e: any) {
-        return {full: true, affectedStoryIds: [], reason: `could not read stats: ${e?.message ?? e}`};
-    }
-    const modules = stats.modules ?? [];
-    if (modules.length === 0) {
-        return {full: true, affectedStoryIds: [], reason: "empty/invalid stats"};
-    }
-
-    // Reverse dependency graph over normalised module names: dependents[X] = the
-    // set of modules that import X. Include concatenated children so an edge into a
-    // merged module resolves. Because content-hashed builds cascade, walking
-    // importers from a changed module reaches every module whose output depends on it.
-    const dependents = new Map<string, Set<string>>();
-    const known = new Set<string>();
-    const addEdge = (importer: string, imported: string) => {
-        if (!importer || !imported) return;
-        let set = dependents.get(imported);
-        if (!set) dependents.set(imported, (set = new Set()));
-        set.add(importer);
-    };
-    let incomplete = Boolean(stats.filteredModules);
-    let edges = 0;
-    const indexModule = (m: StatsModule, parent = "") => {
-        if (incomplete) return;
-        if (m.filteredModules || m.filteredChildren || m.filteredReasons) incomplete = true;
-        const name = m.name ? normalizeModuleName(m.name) : "";
-        if (name) known.add(name);
-        if (parent && name && parent !== name) {
-            addEdge(parent, name);
-            addEdge(name, parent);
-        }
-        for (const r of m.reasons ?? []) {
-            if (++edges > 2_000_000) { incomplete = true; return; }
-            if (r.moduleName) addEdge(normalizeModuleName(r.moduleName), name);
-        }
-        for (const child of m.modules ?? []) indexModule(child, name);
-        for (const child of m.children ?? []) indexModule(child, parent);
-    };
-    for (const m of modules) indexModule(m);
-    if (incomplete) return {full: true, affectedStoryIds: [], reason: "incomplete or oversized webpack graph"};
+    const graph = opts.graph ?? readSourceGraph(opts.statsPath);
+    if ("full" in graph) return graph;
+    const known = (name: string) => Object.hasOwn(graph.importers, name);
 
     // Safety net for global-excludes: a file that WOULD be global but was excused
     // (so it could be traced) yet ISN'T in the bundle graph can't be scoped — it
     // may still affect rendering, so fall back to a full render rather than
     // silently carry stale screenshots forward. This makes an over-broad or
     // mistyped exclude fail safe (over-render), never unsafe (under-render).
-    const untraceableExcluded = changed.find((f) => matchesGlobal(f) && isExcluded(f) && !known.has(f));
+    const untraceableExcluded = changed.find((f) => matchesGlobal(f) && isExcluded(f) && !known(f));
     if (untraceableExcluded) {
         return {
             full: true,
@@ -172,7 +193,7 @@ export function traceAffectedStories(opts: {
 
     // Seed: changed files that ARE in the bundle. A changed file that's NOT in the
     // bundle and NOT a global (checked above) can't affect any story's render.
-    const seeds = changed.filter((f) => known.has(f));
+    const seeds = changed.filter((f) => known(f));
 
     // BFS over dependents to collect every affected module name.
     const storyCounts = new Map<string, number>();
@@ -192,7 +213,7 @@ export function traceAffectedStories(opts: {
         if (/(^|\/)\.storybook\/preview\.[cm]?[jt]sx?$/.test(cur)) {
             return {full: true, affectedStoryIds: [], reason: "shared preview dependency changed"};
         }
-        for (const dep of dependents.get(cur) ?? []) {
+        for (const dep of known(cur) ? graph.importers[cur] : []) {
             if (!affected.has(dep)) {
                 affected.add(dep);
                 queue.push(dep);
@@ -204,7 +225,7 @@ export function traceAffectedStories(opts: {
     const affectedStoryIds: string[] = [];
     for (const story of opts.stories) {
         const sp = normalizeGitPath(story.importPath);
-        if (!known.has(sp) || affected.has(sp)) affectedStoryIds.push(story.id);
+        if (!known(sp) || affected.has(sp)) affectedStoryIds.push(story.id);
     }
 
     return {

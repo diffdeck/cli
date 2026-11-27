@@ -1,3 +1,4 @@
+import type {SourceGraph} from "./turbosnap";
 // Each worker reuses a page. Associate every resource requested in a chunk with
 // every story in that chunk: modules and fonts can stay in memory across switches.
 import {createHash} from "node:crypto";
@@ -5,10 +6,15 @@ import {createReadStream, promises as fs} from "node:fs";
 import path from "node:path";
 
 export interface Group { ids: string[]; paths: string[]; external: boolean }
-export interface Snapshot { version: 1; settings: string; groups: Group[]; hashes: Record<string, string> }
+export interface SourceSnapshot { graph: SourceGraph; stories: {id: string; importPath: string}[] }
+export interface Snapshot { source?: SourceSnapshot; version: 1; settings: string; groups: Group[]; hashes: Record<string, string> }
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 export function matchingSnapshot(value: any, settings: string): value is Snapshot {
     const strings = (items: unknown) => Array.isArray(items) && items.every(item => typeof item === "string");
+    const source = value?.source;
+    if (source !== undefined && (!source?.graph?.importers || typeof source.graph.importers !== "object" ||
+        !Object.values(source.graph.importers).every(strings) || !Array.isArray(source.stories) ||
+        !source.stories.every((s: any) => s && typeof s.id === "string" && typeof s.importPath === "string"))) return false;
     return value?.version === 1 && value.settings === settings && value.hashes && typeof value.hashes === "object" &&
         Array.isArray(value.groups) && value.groups.every((g: Group) => g && strings(g.ids) && strings(g.paths) &&
             typeof g.external === "boolean" && g.paths.every(p => Object.hasOwn(value.hashes, p) && typeof value.hashes[p] === "string"));
